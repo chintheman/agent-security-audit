@@ -182,7 +182,7 @@ def _check_credential_shaped_string_anywhere(manifest, root) -> list:
     return findings
 
 
-def _dotenv_paths(manifest, root) -> list:
+def dotenv_paths(manifest, root) -> list:
     """Absolute, normalized paths -- normpath matters here because
     Component.root can be "." (relpath of scan_root itself), and an
     un-normalized os.path.join produces "root/./.env" which is a different
@@ -199,7 +199,7 @@ def _dotenv_paths(manifest, root) -> list:
 
 def _check_dotenv_world_readable(manifest, root) -> list:
     findings = []
-    for path in _dotenv_paths(manifest, root):
+    for path in dotenv_paths(manifest, root):
         try:
             mode = os.stat(path).st_mode
         except OSError:
@@ -225,7 +225,7 @@ def _check_dotenv_permission_drift(manifest, root, context) -> list:
     if not baseline:
         return []  # coverage layer (runner.py) records "no baseline supplied"
     findings = []
-    for path in _dotenv_paths(manifest, root):
+    for path in dotenv_paths(manifest, root):
         try:
             current_mode = os.stat(path).st_mode & 0o777
         except OSError:
@@ -248,7 +248,7 @@ def _check_dotenv_permission_drift(manifest, root, context) -> list:
 
 def _check_generic_env_var_name_collision(manifest, root) -> list:
     locations_by_name: dict = {}
-    for path in _dotenv_paths(manifest, root):
+    for path in dotenv_paths(manifest, root):
         for _, key, value, _raw in _parse_dotenv(path):
             if key.upper() in GENERIC_ENV_NAMES and not _is_placeholder(value):
                 locations_by_name.setdefault(key.upper(), set()).add(os.path.relpath(path, root) if path.startswith(root) else path)
@@ -271,7 +271,7 @@ def _check_generic_env_var_name_collision(manifest, root) -> list:
 
 def _check_duplicate_secret_value_different_names(manifest, root) -> list:
     by_hash: dict = {}
-    for path in _dotenv_paths(manifest, root):
+    for path in dotenv_paths(manifest, root):
         rel = os.path.relpath(path, root) if path.startswith(root) else path
         for _, key, value, _raw in _parse_dotenv(path):
             if _is_placeholder(value) or len(value) < 6:

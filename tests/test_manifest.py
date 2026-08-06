@@ -149,6 +149,19 @@ class TestCompletenessContract(unittest.TestCase):
             m = manifest_mod.build(root)
             self.assertEqual(m.verify_completeness(), [])
 
+    def test_plain_files_with_no_signature_match_are_not_gaps(self):
+        # regression test: a bare README.md (or any file/dir matching no
+        # stack signature) was previously reported as an "unaccounted"
+        # gap, which conflated "nothing notable here" with "we failed to
+        # look here" -- a real bug caught by tests/test_cli.py's exit-code
+        # tests unexpectedly returning PARTIAL_UNKNOWN on a clean project.
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "README.md"), "hello\n")
+            write(os.path.join(root, "notes"), "")
+            m = manifest_mod.build(root)
+            self.assertEqual(m.components, [])
+            self.assertEqual(m.verify_completeness(), [])
+
 
 @unittest.skipIf(os.geteuid() == 0, "permission checks are meaningless as root")
 class TestUnreadablePaths(unittest.TestCase):
