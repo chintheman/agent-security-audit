@@ -121,6 +121,15 @@ confidence and visibly tagged in the report. No secret value or file
 snippet is ever sent — see `asa/ai_assist.py`'s docstring for the exact
 guarantee.
 
+## Don't want to install the CLI?
+
+[`PLAYBOOK.md`](PLAYBOOK.md) is the same audit as a set of instructions
+for whatever agent you already use and trust — paste it in and say "audit
+this project." No install, nothing to trust but your own agent. Less
+reliable than the CLI (no test suite backing it — an LLM re-derives each
+check from prose every run instead of running tested code), but useful
+when installing someone else's tool isn't an option.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a new checker.
