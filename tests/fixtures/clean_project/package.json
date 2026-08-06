@@ -1,0 +1,11 @@
+{
+  "name": "clean-fixture",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "jest",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}

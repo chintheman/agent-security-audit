@@ -1,0 +1,3 @@
+PASSWORD: hunter2isnotarealpasswordbutlooksplausible
+replicas: 3
+debug: false

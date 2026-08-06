@@ -1,0 +1,20 @@
+{
+  "clean_project": {
+    "max_total_findings": 0
+  },
+  "selftest_project": {
+    "min_total_findings": 10,
+    "must_include_check_ids": [
+      "agent.broad_bash_allowlist",
+      "ci.script_injection_in_run_block",
+      "ci.overly_broad_github_token_permissions",
+      "ci.action_pinned_by_mutable_tag",
+      "network.service_bound_all_interfaces",
+      "secrets.hardcoded_value_instead_of_env_ref",
+      "secrets.credential_shaped_string_anywhere",
+      "supply_chain.dependency_from_git_or_tarball_url",
+      "supply_chain.forked_dependency_behind_upstream",
+      "supply_chain.npm_install_lifecycle_hook"
+    ]
+  }
+}

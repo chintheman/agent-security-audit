@@ -40,7 +40,7 @@ class TestHtmlRenderer(unittest.TestCase):
 
     def test_html_special_characters_are_escaped(self):
         finding = model_mod.DetailFinding(
-            id="x", title='<script>alert(1)</script>', severity="High",
+            id="x", check_id="test.x", title='<script>alert(1)</script>', severity="High",
             fix="fix it", location='"; DROP TABLE x; --', evidence={},
             confidence="high", source="heuristic", auto_fixable=False,
         )
