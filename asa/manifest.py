@@ -96,6 +96,20 @@ def _host_info(is_remote: bool = False) -> dict:
     }
 
 
+def iter_files(scan_root: str, *, include_vendored: bool = False):
+    """Yield absolute file paths under scan_root, pruning vendored dirs the
+    same way build() does. Shared walk helper so checkers don't each
+    re-implement vendored-dir pruning independently."""
+    scan_root = os.path.abspath(os.path.expanduser(scan_root))
+    for dirpath, dirnames, filenames in os.walk(scan_root, topdown=True, onerror=lambda e: None):
+        if not include_vendored:
+            for d in list(dirnames):
+                if d in VENDORED_DIR_NAMES or d.endswith(".egg-info"):
+                    dirnames.remove(d)
+        for f in filenames:
+            yield os.path.join(dirpath, f)
+
+
 def build(scan_root: str, *, scope: str = "project", include_vendored: bool = False, home_dir: str | None = None, is_remote: bool = False) -> Manifest:
     """Build a Manifest for scan_root. scope="machine" additionally checks
     fixed machine-level paths under home_dir (defaults to the invoking
