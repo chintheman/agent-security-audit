@@ -139,6 +139,23 @@ class TestCredentialShapeDetection(unittest.TestCase):
         self.assertNotIn(value, masked)
         self.assertIn("<redacted:", masked)
 
+    def test_filesystem_paths_are_not_flagged_as_generic_secrets(self):
+        """Regression test: the generic_high_entropy_hex_or_b64 pattern
+        used to include "/" in its character class, so it matched straight
+        through entire paths (e.g. a macOS tempdir like
+        /var/folders/bn/k3vy847j0msf95q2sf4n3c980000gn/T/tmpXXXXXXXX) as
+        one long "high-entropy" run. Caught by ai_assist.py's tests
+        refusing to send a path as a prompt field."""
+        paths = [
+            "/var/folders/bn/k3vy847j0msf95q2sf4n3c980000gn/T/tmprojr8n4h",
+            "/Users/someone/projects/my-project-name/node_modules/some-package/index.js",
+            "/home/user/.hermes/profiles/health-wellness/cron/morning_journal.py",
+        ]
+        for path in paths:
+            with self.subTest(path=path):
+                hits = redact.find_credential_shapes(path)
+                self.assertEqual(hits, [], f"path {path!r} was incorrectly flagged as credential-shaped: {hits}")
+
 
 class TestAssertNoSecretShape(unittest.TestCase):
     def test_raises_on_credential_shaped_text(self):

@@ -31,8 +31,18 @@ CREDENTIAL_SHAPE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("stripe_key", re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
     ("private_key_block", re.compile(r"-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----")),
     (
+        # Deliberately excludes "/" from the character class. It's part of
+        # the base64 alphabet, but including it here made this pattern
+        # match straight through entire filesystem paths as one long run
+        # ("/var/folders/.../tmpXXXXXX" reads as 40+ contiguous
+        # "high-entropy" characters once "/" is a valid member) -- a real
+        # false positive caught by ai_assist.py's tests, and the same
+        # pattern this checker uses, so it would have hit ordinary source
+        # code containing file paths too. Without "/", a real path's
+        # slash-separated segments break the match at each boundary, and
+        # ordinary path segments are almost always under the 32-char floor.
         "generic_high_entropy_hex_or_b64",
-        re.compile(r"\b(?=[A-Za-z0-9+/_=-]{32,}\b)(?=[^A-Za-z]*[A-Za-z])(?=[^0-9]*[0-9])[A-Za-z0-9+/_=-]{32,}\b"),
+        re.compile(r"\b(?=[A-Za-z0-9+_=-]{32,}\b)(?=[^A-Za-z]*[A-Za-z])(?=[^0-9]*[0-9])[A-Za-z0-9+_=-]{32,}\b"),
     ),
 ]
 

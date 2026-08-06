@@ -220,6 +220,46 @@ class TestHostFlag(unittest.TestCase):
             self.assertIn("SSH", err)
 
 
+class TestAiFlag(unittest.TestCase):
+    def test_ai_and_host_together_errors(self):
+        code, out, err = run_cli(["scan", "--host", "user@myhost", "--ai"])
+        self.assertEqual(code, exitcodes.ERROR)
+        self.assertIn("--host", err)
+
+    def test_ai_off_by_default_never_imports_ai_assist(self):
+        import sys
+        sys.modules.pop("asa.ai_assist", None)
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "README.md"), "hi\n")
+            run_cli(["scan", root])
+        self.assertNotIn("asa.ai_assist", sys.modules)
+
+    def test_ai_flag_invokes_ai_assist_and_notes_it_in_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "README.md"), "hi\n")
+            with mock.patch("asa.ai_assist.find_unrecognized_directories", return_value=[]):
+                code, out, err = run_cli(["scan", root, "--ai", "--format", "term"])
+        self.assertIn("AI-assist", out)
+
+    def test_ai_classification_merges_into_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "unknownstack", "main.tf"), "")
+            fake_guess = {"kind_guess": "terraform_config", "confidence": "medium", "rationale": "looks like terraform"}
+            with mock.patch("asa.ai_assist.classify_unknown_component", return_value=fake_guess):
+                code, out, err = run_cli(["scan", root, "--ai", "--format", "json"])
+            data = json.loads(out)
+            self.assertIn("classified 1", data["ai_assist_summary"])
+
+    def test_ai_assist_error_degrades_to_warning_not_crash(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "README.md"), "hi\n")
+            from asa.ai_assist import AIAssistError
+            with mock.patch("asa.ai_assist.find_unrecognized_directories", side_effect=AIAssistError("no API key")):
+                code, out, err = run_cli(["scan", root, "--ai"])
+            self.assertNotEqual(code, exitcodes.ERROR)
+            self.assertIn("no API key", err)
+
+
 class TestFixCommand(unittest.TestCase):
     def test_dry_run_applies_nothing(self):
         with tempfile.TemporaryDirectory() as root:

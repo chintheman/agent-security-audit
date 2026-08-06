@@ -1,10 +1,7 @@
 """Command-line entry point: `asa scan`, `asa report`, `asa fix`,
-`asa list-checks`.
-
-`--host` (remote-over-SSH) and `--ai` are added once asa/ssh_remote.py and
-asa/ai_assist.py exist -- they're deliberately absent from the parser
-until then rather than present-but-broken.
-"""
+`asa list-checks`. `--host` scans a remote box over SSH; `--ai` opts in to
+AI-assisted component classification and fix-phrasing (never combined --
+the remote bundle doesn't include ai_assist.py in v1)."""
 
 from __future__ import annotations
 
@@ -63,6 +60,8 @@ def _render(model, fmt: str, verbose: bool = False) -> str:
                 "need_you": [n.__dict__ for n in model.need_you],
                 "need_you_overflow": model.need_you_overflow,
                 "coverage_summary": model.coverage_summary,
+                "fixed_count": model.fixed_count,
+                "ai_assist_summary": model.ai_assist_summary,
                 "detail_sections": [
                     {"category": s.category, "label": s.label, "status": s.status,
                      "findings": [f.__dict__ for f in s.findings]}
@@ -84,7 +83,52 @@ def _exit_code_for(manifest, coverage, findings) -> int:
     return exitcodes.CLEAN
 
 
+def _run_ai_assist(manifest, findings, root: str):
+    """Runs both --ai call sites. Never raises out to the caller -- an
+    AI-assist failure (missing key, network error, bad response) degrades
+    to a clear stderr warning and a report note, never crashes the scan
+    that already succeeded without it."""
+    from asa import ai_assist
+    from asa.finding import Source
+    from asa.manifest import Component
+
+    classified = 0
+    fixed = 0
+
+    try:
+        for cand in ai_assist.find_unrecognized_directories(manifest, root, max_dirs=5):
+            guess = ai_assist.classify_unknown_component(cand["path"], cand["sample_files"])
+            manifest.components.append(Component(
+                kind=guess["kind_guess"], root=cand["rel"], signature_files=cand["sample_files"],
+                metadata={"ai_assisted": True, "confidence": guess["confidence"], "rationale": guess["rationale"]},
+            ))
+            classified += 1
+    except ai_assist.AIAssistError as exc:
+        print(f"warning: --ai component classification failed: {exc}", file=sys.stderr)
+
+    try:
+        for f in findings:
+            if f.fix:
+                continue  # every built-in checker always sets this (see ai_assist.py's docstring) -- this only ever fires for a future checker that doesn't
+            stub = {"category": f.category.value, "check_id": f.check_id, "title": f.title,
+                    "file": f.evidence.file or "", "variable_name": f.evidence.variable_name or ""}
+            f.fix = ai_assist.suggest_fix(stub)
+            f.source = Source.AI_ASSIST
+            f.confidence = "medium"
+            fixed += 1
+    except ai_assist.AIAssistError as exc:
+        print(f"warning: --ai fix-phrasing failed: {exc}", file=sys.stderr)
+
+    if classified == 0 and fixed == 0:
+        return "ran, nothing for it to do (no unrecognized directories, no findings missing fix guidance)"
+    return f"classified {classified} unrecognized director{'y' if classified == 1 else 'ies'}, phrased {fixed} fix(es) with no built-in guidance"
+
+
 def cmd_scan(args) -> int:
+    if args.ai and args.host:
+        print("error: --ai cannot be combined with --host in v1 -- the remote bundle doesn't include ai_assist.py.", file=sys.stderr)
+        return exitcodes.ERROR
+
     context = {}
     if args.baseline:
         try:
@@ -126,7 +170,11 @@ def cmd_scan(args) -> int:
         cutoff = order.index(args.severity_min)
         findings = [f for f in findings if order.index(f.severity.value) <= cutoff]
 
-    model = build_report_model(manifest, findings, coverage)
+    ai_assist_summary = None
+    if args.ai:
+        ai_assist_summary = _run_ai_assist(manifest, findings, args.path)
+
+    model = build_report_model(manifest, findings, coverage, ai_assist_summary=ai_assist_summary)
     output = _render(model, args.format, verbose=args.verbose)
 
     # exit code must be decided from what was actually scanned, before this
@@ -221,6 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--include-vendored", action="store_true")
     s.add_argument("--baseline", default=None, help="Path to a prior scan's JSON output, for drift checks")
     s.add_argument("--host", default=None, help="Scan a remote box over SSH instead of the local filesystem (e.g. user@myhost). Uses your existing SSH access -- this tool never manages credentials itself.")
+    s.add_argument("--ai", action="store_true", help="Opt in to AI-assisted classification of unrecognized directories and fix-phrasing. Requires ASA_LLM_API_KEY (your own key). Never combined with --host in v1.")
     s.add_argument("--verbose", action="store_true", help="Show full per-category detail in term output (md/html always show it)")
     s.set_defaults(func=cmd_scan)
 
