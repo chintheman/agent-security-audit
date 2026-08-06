@@ -83,7 +83,10 @@ class TestScanCommand(unittest.TestCase):
             write(os.path.join(root, "config.yaml"), "PASSWORD: hunter2isnotarealpasswordbutlooksok\n")
             code, out, err = run_cli(["scan", root, "--category", "network", "--format", "json"])
             data = json.loads(out)
-            self.assertEqual(data["detail_sections"], [])
+            # only the requested category should appear, and it should
+            # have found nothing in this secrets-only fixture
+            self.assertEqual([s["category"] for s in data["detail_sections"]], ["network"])
+            self.assertEqual(data["detail_sections"][0]["findings"], [])
 
     def test_severity_min_filter(self):
         with tempfile.TemporaryDirectory() as root:
@@ -95,6 +98,16 @@ class TestScanCommand(unittest.TestCase):
             data = json.loads(out)
             all_findings = [f for s in data["detail_sections"] for f in s["findings"]]
             self.assertTrue(all(f["severity"] == "Critical" for f in all_findings))
+
+
+class TestVerboseFlag(unittest.TestCase):
+    def test_verbose_shows_detail_in_terminal_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "config.yaml"), "PASSWORD: hunter2isnotarealpasswordbutlooksok\n")
+            code, out, err = run_cli(["scan", root, "--format", "term"])
+            code_v, out_v, err_v = run_cli(["scan", root, "--format", "term", "--verbose"])
+            self.assertNotIn("DETAIL BY CATEGORY", out)
+            self.assertIn("DETAIL BY CATEGORY", out_v)
 
 
 class TestBaselineDrift(unittest.TestCase):

@@ -50,7 +50,7 @@ def _load_baseline(path: str) -> dict:
     return {"baseline_modes": data.get("dotenv_modes", {})}
 
 
-def _render(model, fmt: str) -> str:
+def _render(model, fmt: str, verbose: bool = False) -> str:
     if fmt == "html":
         return render_html(model)
     if fmt == "json":
@@ -71,7 +71,7 @@ def _render(model, fmt: str) -> str:
             },
             indent=2,
         )
-    return render_text(model, fmt=fmt if fmt in ("term", "md") else "term", verbose=(fmt == "md"))
+    return render_text(model, fmt=fmt if fmt in ("term", "md") else "term", verbose=verbose or (fmt == "md"))
 
 
 def _exit_code_for(manifest, coverage, findings) -> int:
@@ -112,7 +112,7 @@ def cmd_scan(args) -> int:
         findings = [f for f in findings if order.index(f.severity.value) <= cutoff]
 
     model = build_report_model(manifest, findings, coverage)
-    output = _render(model, args.format)
+    output = _render(model, args.format, verbose=args.verbose)
 
     # exit code must be decided from what was actually scanned, before this
     # run's own asa-output/ write can appear as a fresh top-level entry and
@@ -159,7 +159,7 @@ def cmd_report(args) -> int:
         ))
 
     model = build_report_model(manifest, findings, data["coverage"])
-    output = _render(model, args.format)
+    output = _render(model, args.format, verbose=args.verbose)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(output)
@@ -189,12 +189,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--category", default=None, help="Comma-separated category filter")
     s.add_argument("--include-vendored", action="store_true")
     s.add_argument("--baseline", default=None, help="Path to a prior scan's JSON output, for drift checks")
+    s.add_argument("--verbose", action="store_true", help="Show full per-category detail in term output (md/html always show it)")
     s.set_defaults(func=cmd_scan)
 
     r = sub.add_parser("report", help="Re-render a saved scan without re-scanning.")
     r.add_argument("--from-json", required=True)
     r.add_argument("--format", choices=["term", "md", "html", "json"], default="term")
     r.add_argument("--out", default=None)
+    r.add_argument("--verbose", action="store_true", help="Show full per-category detail in term output (md/html always show it)")
     r.set_defaults(func=cmd_report)
 
     lc = sub.add_parser("list-checks", help="List every check any registered checker can emit.")

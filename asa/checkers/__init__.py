@@ -8,8 +8,13 @@ asa/checkers/base.py. New checkers get added here, one line, once they
 exist -- registry.py imports this list rather than scanning the directory.
 """
 
-from asa.checkers import secrets  # noqa: F401
+from asa.checkers import agent_blast_radius, ci_injection, network, permissions, secrets, supply_chain  # noqa: F401
 
 CHECKER_MODULES = [
     secrets,
+    permissions,
+    network,
+    ci_injection,
+    supply_chain,
+    agent_blast_radius,
 ]

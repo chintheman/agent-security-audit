@@ -66,6 +66,19 @@ def _match_ssh_dir(dirpath, filenames, dirnames):
     return None
 
 
+def _match_cloudflared_config(dirpath, filenames, dirnames):
+    if os.path.basename(dirpath) == ".cloudflared":
+        hits = [f for f in filenames if f.endswith((".yml", ".yaml"))]
+        return hits or None
+    return None
+
+
+def _match_hermes_profile(dirpath, filenames, dirnames):
+    if os.path.basename(dirpath) == ".hermes":
+        return ["<directory>"]
+    return None
+
+
 def _match_claude_code_config(dirpath, filenames, dirnames):
     if os.path.basename(dirpath) == ".claude" and "settings.json" in filenames:
         return ["settings.json"]
@@ -124,6 +137,8 @@ SIGNATURES: list[Signature] = [
     Signature("dockerfile", _match_dockerfile, "Dockerfile present"),
     Signature("github_actions", _match_github_actions, ".github/workflows/*.yml present"),
     Signature("ssh_dir", _match_ssh_dir, ".ssh directory present"),
+    Signature("cloudflared_config", _match_cloudflared_config, ".cloudflared/*.yml present"),
+    Signature("hermes_profile", _match_hermes_profile, ".hermes directory present"),
     Signature("claude_code_config", _match_claude_code_config, ".claude/settings.json or .mcp.json present"),
     Signature("mcp_config", _match_mcp_config, "claude_desktop_config.json present"),
     Signature("dotenv_files", _match_dotenv_files, ".env* file present"),
