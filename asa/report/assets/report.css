@@ -1,0 +1,36 @@
+:root {
+  --ground: #F3F5F6; --surface: #FFF; --surface-2: #E9EDEF; --border: #D6DEE1;
+  --text: #1B2226; --dim: #526069; --crit: #B23A26; --crit-bg: #FBEAE6;
+  --high: #B4691C; --med: #967816; --good: #2F7A50; --good-bg: #E6F3EC;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #12181B; --surface: #1A2226; --surface-2: #212B2F; --border: #2E3A3F;
+    --text: #E7EDEF; --dim: #93A3AA; --crit: #F0967F; --crit-bg: #3A211C;
+    --high: #F0B672; --med: #E6CB6E; --good: #86D1A6; --good-bg: #17301F;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ground); color: var(--text); font-family: var(--sans); line-height: 1.5; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
+code { font-family: var(--mono); font-size: .87em; background: var(--surface-2); padding: .08em .3em; border-radius: 3px; }
+h1 { font-size: 1.5rem; font-weight: 800; margin: 0; }
+.sub { color: var(--dim); font-size: .85rem; margin: .35rem 0 0; }
+h2 { font-size: 1rem; font-weight: 800; margin: 2rem 0 .6rem; }
+.bar { display: flex; gap: .4rem; flex-wrap: wrap; margin: 1.2rem 0; }
+.pill { font-family: var(--mono); font-size: .75rem; padding: .3rem .65rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
+.pill b { font-size: .9rem; }
+.pill.crit b { color: var(--crit); } .pill.high b { color: var(--high); } .pill.good b { color: var(--good); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: .9rem 1.05rem; margin-bottom: .55rem; border-left: 4px solid var(--crit); }
+.ct { font-weight: 700; font-size: .93rem; }
+.cd { font-size: .84rem; color: var(--dim); margin-top: .3rem; }
+details { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: .55rem; overflow: hidden; }
+summary { cursor: pointer; padding: .8rem 1.05rem; font-weight: 700; font-size: .92rem; }
+.body { padding: 0 1.05rem 1rem; border-top: 1px solid var(--border); }
+.finding { padding: .6rem 0; border-top: 1px solid var(--border); font-size: .85rem; }
+.finding:first-child { border-top: none; }
+.finding .t { font-weight: 600; }
+.finding .f { color: var(--dim); margin-top: .2rem; }
+.badge { font-family: var(--mono); font-size: .7rem; padding: .1rem .4rem; border-radius: 4px; background: var(--surface-2); margin-left: .4rem; }
