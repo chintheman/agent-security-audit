@@ -1,0 +1,28 @@
+# Scan output — findings are for the user, never for this (or any) repo's history
+asa-output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Never let this repo carry a real credential either
+.env
+.env.*
+*.pem
+*_rsa
+*_ed25519
+*.key
+
+# OS/editor cruft
+.DS_Store
+.idea/
+.vscode/
