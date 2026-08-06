@@ -166,9 +166,16 @@ class TestFirewallDisabled(unittest.TestCase):
             self.assertEqual(findings, [])
 
     def test_linux_no_ufw_conf_no_findings(self):
+        # regression: this must mock os.path.isfile like the other two ufw
+        # tests do, not rely on ambient filesystem state -- GitHub's own
+        # ubuntu-latest CI runners ship ufw pre-installed and disabled by
+        # default, so "assume /etc/ufw/ufw.conf doesn't exist" was true on
+        # macOS (no ufw at all) but false in CI, and the checker correctly
+        # flagged CI's own real ufw.conf as a finding. Caught by CI itself.
         with tempfile.TemporaryDirectory() as root:
             m = fake_manifest(root, os_name="Linux")
-            with mock.patch.dict(os.environ, {"HOME": root}):
+            with mock.patch.dict(os.environ, {"HOME": root}), \
+                 mock.patch("os.path.isfile", return_value=False):
                 findings = network_checker._check_firewall_disabled(m, root)
             self.assertEqual(findings, [])
 
