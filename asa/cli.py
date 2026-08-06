@@ -1,6 +1,6 @@
-"""Command-line entry point: `asa scan`, `asa report`, `asa list-checks`.
+"""Command-line entry point: `asa scan`, `asa report`, `asa fix`,
+`asa list-checks`.
 
-`asa fix` is added in a later milestone once asa/fixer.py exists.
 `--host` (remote-over-SSH) and `--ai` are added once asa/ssh_remote.py and
 asa/ai_assist.py exist -- they're deliberately absent from the parser
 until then rather than present-but-broken.
@@ -132,8 +132,11 @@ def cmd_scan(args) -> int:
     return exit_code
 
 
-def cmd_report(args) -> int:
-    with open(args.from_json, "r", encoding="utf-8") as fh:
+def _load_scan_json(path: str):
+    """Reconstructs (manifest, findings, coverage) from a saved
+    asa-output/*.json -- shared by `report` and `fix`, both of which
+    operate on a prior scan's output rather than the live filesystem."""
+    with open(path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
 
     from asa.finding import Category, Evidence, Finding, Severity, Source
@@ -158,14 +161,45 @@ def cmd_report(args) -> int:
             auto_fixable=fd.get("auto_fixable", False), references=fd.get("references", []), id=fd["id"],
         ))
 
-    model = build_report_model(manifest, findings, data["coverage"])
+    return manifest, findings, data["coverage"]
+
+
+def cmd_report(args) -> int:
+    manifest, findings, coverage = _load_scan_json(args.from_json)
+    model = build_report_model(manifest, findings, coverage)
     output = _render(model, args.format, verbose=args.verbose)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(output)
     else:
         print(output)
-    return _exit_code_for(manifest, data["coverage"], findings)
+    return _exit_code_for(manifest, coverage, findings)
+
+
+def cmd_fix(args) -> int:
+    from asa import fixer
+
+    manifest, findings, coverage = _load_scan_json(args.from_json)
+    if args.only_check_id:
+        wanted = set(args.only_check_id.split(","))
+        findings = [f for f in findings if f.check_id in wanted]
+
+    fixable = [f for f in findings if fixer.is_auto_fixable(f.check_id)]
+    if not fixable:
+        print("Nothing in this scan is auto-fixable (chmod-only, 3 check types). Nothing to do.")
+        return exitcodes.CLEAN
+
+    mode = "dry-run" if args.dry_run else ("yes" if args.yes else "ask-each")
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(args.from_json)) or ".", "asa-output")
+    results = fixer.apply(fixable, mode=mode, log_dir=log_dir)
+
+    applied = sum(1 for r in results if r.applied)
+    skipped = [r for r in results if not r.applied]
+    print(f"\n{applied}/{len(results)} fixes applied.")
+    for r in skipped:
+        print(f"  skipped: {r.path} ({r.skipped_reason})")
+
+    return exitcodes.CLEAN if applied or not skipped else exitcodes.FINDINGS_PRESENT
 
 
 def cmd_list_checks(args) -> int:
@@ -198,6 +232,13 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", default=None)
     r.add_argument("--verbose", action="store_true", help="Show full per-category detail in term output (md/html always show it)")
     r.set_defaults(func=cmd_report)
+
+    fx = sub.add_parser("fix", help="Apply the narrow set of safe, reversible fixes (chmod-only) from a prior scan.")
+    fx.add_argument("--from-json", required=True)
+    fx.add_argument("--dry-run", action="store_true", help="Print what would run, apply nothing")
+    fx.add_argument("--yes", action="store_true", help="Apply every fixable finding without prompting")
+    fx.add_argument("--only-check-id", default=None, help="Comma-separated check_id filter")
+    fx.set_defaults(func=cmd_fix)
 
     lc = sub.add_parser("list-checks", help="List every check any registered checker can emit.")
     lc.add_argument("--category", default=None)

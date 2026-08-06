@@ -161,6 +161,44 @@ class TestReportCommand(unittest.TestCase):
             self.assertEqual(code, exitcodes.FINDINGS_PRESENT)
 
 
+class TestFixCommand(unittest.TestCase):
+    def test_dry_run_applies_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, ".env")
+            write(path, "KEY=value\n")
+            os.chmod(path, 0o644)
+            run_cli(["scan", root, "--format", "json"])
+            out_dir = os.path.join(root, "asa-output")
+            saved = os.path.join(out_dir, os.listdir(out_dir)[0])
+
+            code, out, err = run_cli(["fix", "--from-json", saved, "--dry-run"])
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+            self.assertIn("0/1 fixes applied", out)
+
+    def test_yes_applies_fix(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, ".env")
+            write(path, "KEY=value\n")
+            os.chmod(path, 0o644)
+            run_cli(["scan", root, "--format", "json"])
+            out_dir = os.path.join(root, "asa-output")
+            saved = os.path.join(out_dir, os.listdir(out_dir)[0])
+
+            code, out, err = run_cli(["fix", "--from-json", saved, "--yes"])
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertIn("1/1 fixes applied", out)
+
+    def test_nothing_fixable_reports_cleanly(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "config.yaml"), "PASSWORD: hunter2isnotarealpasswordbutlooksok\n")
+            run_cli(["scan", root, "--format", "json"])
+            out_dir = os.path.join(root, "asa-output")
+            saved = os.path.join(out_dir, os.listdir(out_dir)[0])
+
+            code, out, err = run_cli(["fix", "--from-json", saved, "--yes"])
+            self.assertIn("Nothing", out)
+
+
 class TestListChecksCommand(unittest.TestCase):
     def test_lists_secrets_checks(self):
         code, out, err = run_cli(["list-checks"])
