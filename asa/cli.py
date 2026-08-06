@@ -85,10 +85,6 @@ def _exit_code_for(manifest, coverage, findings) -> int:
 
 
 def cmd_scan(args) -> int:
-    if not os.path.isdir(args.path):
-        print(f"error: {args.path!r} is not a directory", file=sys.stderr)
-        return exitcodes.ERROR
-
     context = {}
     if args.baseline:
         try:
@@ -98,13 +94,32 @@ def cmd_scan(args) -> int:
 
     categories = args.category.split(",") if args.category else None
 
-    manifest, findings, coverage = runner.run(
-        args.path,
-        scope=args.scope,
-        include_vendored=args.include_vendored,
-        categories=categories,
-        context=context,
-    )
+    if args.host:
+        from asa import ssh_remote
+        try:
+            manifest, findings, coverage = ssh_remote.run(
+                args.host, scan_root=args.path, scope=args.scope,
+                include_vendored=args.include_vendored, categories=categories, context=context,
+            )
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return exitcodes.ERROR
+        # nothing local to write asa-output into on the remote's behalf --
+        # lands in the current directory instead of a path that doesn't
+        # exist on this machine.
+        out_dir = os.path.join(".", "asa-output")
+    else:
+        if not os.path.isdir(args.path):
+            print(f"error: {args.path!r} is not a directory", file=sys.stderr)
+            return exitcodes.ERROR
+        manifest, findings, coverage = runner.run(
+            args.path,
+            scope=args.scope,
+            include_vendored=args.include_vendored,
+            categories=categories,
+            context=context,
+        )
+        out_dir = os.path.join(args.path, "asa-output")
 
     if args.severity_min:
         order = ["critical", "high", "medium", "low", "info"]
@@ -126,7 +141,7 @@ def cmd_scan(args) -> int:
     else:
         print(output)
 
-    json_path = _write_scan_json(os.path.join(args.path, "asa-output"), manifest, findings, coverage)
+    json_path = _write_scan_json(out_dir, manifest, findings, coverage)
     print(f"(full scan JSON written to {json_path})", file=sys.stderr)
 
     return exit_code
@@ -136,32 +151,11 @@ def _load_scan_json(path: str):
     """Reconstructs (manifest, findings, coverage) from a saved
     asa-output/*.json -- shared by `report` and `fix`, both of which
     operate on a prior scan's output rather than the live filesystem."""
+    from asa.serialize import scan_data_to_objects
+
     with open(path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
-
-    from asa.finding import Category, Evidence, Finding, Severity, Source
-    from asa.manifest import Component, Manifest
-
-    m = data["manifest"]
-    components = [Component(kind=c["kind"], root=c["root"], signature_files=c["signature_files"], metadata=c["metadata"]) for c in m.get("components", [])]
-    manifest = Manifest(
-        scan_root=m["scan_root"], scanned_at=m["scanned_at"], components=components,
-        skipped=m["skipped"], unreadable=m["unreadable"], host=m["host"],
-        walked_top_level=m.get("walked_top_level", []),
-        top_level_snapshot=m.get("top_level_snapshot", []),
-    )
-
-    findings = []
-    for fd in data["findings"]:
-        ev = Evidence(**fd["evidence"])
-        findings.append(Finding(
-            check_id=fd["check_id"], category=Category(fd["category"]), severity=Severity(fd["severity"]),
-            title=fd["title"], evidence=ev, fix=fd["fix"], fix_time_estimate=fd.get("fix_time_estimate"),
-            location=fd["location"], confidence=fd.get("confidence", "high"), source=Source(fd.get("source", "heuristic")),
-            auto_fixable=fd.get("auto_fixable", False), references=fd.get("references", []), id=fd["id"],
-        ))
-
-    return manifest, findings, data["coverage"]
+    return scan_data_to_objects(data)
 
 
 def cmd_report(args) -> int:
@@ -180,6 +174,9 @@ def cmd_fix(args) -> int:
     from asa import fixer
 
     manifest, findings, coverage = _load_scan_json(args.from_json)
+    if manifest.host.get("is_remote"):
+        print("error: this scan was run over SSH (--host). asa fix only operates on the local filesystem in v1 -- no mutating a remote box from here.", file=sys.stderr)
+        return exitcodes.ERROR
     if args.only_check_id:
         wanted = set(args.only_check_id.split(","))
         findings = [f for f in findings if f.check_id in wanted]
@@ -223,6 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--category", default=None, help="Comma-separated category filter")
     s.add_argument("--include-vendored", action="store_true")
     s.add_argument("--baseline", default=None, help="Path to a prior scan's JSON output, for drift checks")
+    s.add_argument("--host", default=None, help="Scan a remote box over SSH instead of the local filesystem (e.g. user@myhost). Uses your existing SSH access -- this tool never manages credentials itself.")
     s.add_argument("--verbose", action="store_true", help="Show full per-category detail in term output (md/html always show it)")
     s.set_defaults(func=cmd_scan)
 

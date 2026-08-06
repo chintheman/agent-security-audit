@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from asa import exitcodes
 from asa.cli import main
@@ -159,6 +160,64 @@ class TestReportCommand(unittest.TestCase):
 
             code, out, err = run_cli(["report", "--from-json", saved_copy, "--format", "term"])
             self.assertEqual(code, exitcodes.FINDINGS_PRESENT)
+
+
+class TestHostFlag(unittest.TestCase):
+    def _fake_remote_result(self):
+        from asa.finding import Category, Evidence, Finding, Severity
+        from asa.manifest import Manifest
+        manifest = Manifest(
+            scan_root="/home/user/project", scanned_at="2026-01-01T00:00:00Z",
+            components=[], skipped=[], unreadable=[], host={"os": "Linux", "is_remote": True},
+            walked_top_level=[], top_level_snapshot=[],
+        )
+        findings = [Finding(
+            check_id="secrets.dotenv_world_readable", category=Category.SECRETS, severity=Severity.HIGH,
+            title="test", evidence=Evidence(), fix="chmod 600", location="myhost:/home/user/project/.env",
+            auto_fixable=True,
+        )]
+        coverage = {"secrets": {"activated": True, "status": "ok", "error": None}}
+        return manifest, findings, coverage
+
+    def test_host_routes_through_ssh_remote(self):
+        with mock.patch("asa.ssh_remote.run") as mock_remote:
+            mock_remote.return_value = self._fake_remote_result()
+            code, out, err = run_cli(["scan", "--host", "user@myhost", "--format", "json"])
+        mock_remote.assert_called_once()
+        self.assertEqual(code, exitcodes.FINDINGS_PRESENT)
+        self.assertIn("myhost", out)
+
+    def test_host_does_not_require_local_path_to_exist(self):
+        # --path defaults to "." but for --host that's a REMOTE path --
+        # must not be checked against the local filesystem
+        with mock.patch("asa.ssh_remote.run") as mock_remote:
+            mock_remote.return_value = self._fake_remote_result()
+            code, out, err = run_cli(["scan", "/some/remote/only/path", "--host", "user@myhost", "--format", "json"])
+        self.assertNotEqual(code, exitcodes.ERROR)
+
+    def test_remote_failure_reports_cleanly(self):
+        with mock.patch("asa.ssh_remote.run", side_effect=RuntimeError("Permission denied (publickey).")):
+            code, out, err = run_cli(["scan", "--host", "user@myhost"])
+        self.assertEqual(code, exitcodes.ERROR)
+        self.assertIn("Permission denied", err)
+
+    def test_fix_refuses_remote_sourced_scan(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest, findings, coverage = self._fake_remote_result()
+            payload = {
+                "manifest": manifest.to_dict(),
+                "findings": [f.to_dict() for f in findings],
+                "coverage": coverage,
+                "dotenv_modes": {},
+                "tool_version": "0.1.0",
+            }
+            saved = os.path.join(root, "remote-scan.json")
+            with open(saved, "w") as fh:
+                json.dump(payload, fh)
+
+            code, out, err = run_cli(["fix", "--from-json", saved, "--yes"])
+            self.assertEqual(code, exitcodes.ERROR)
+            self.assertIn("SSH", err)
 
 
 class TestFixCommand(unittest.TestCase):
