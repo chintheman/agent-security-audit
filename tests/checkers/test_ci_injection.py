@@ -243,5 +243,93 @@ class TestCleanNoFalsePositives(unittest.TestCase):
             self.assertEqual(findings, [])
 
 
+def _workflow_with_secret(secret_name):
+    """Minimal injectable workflow with one named secret in scope. The
+    injection itself is constant, so the only variable is whether the
+    secret name escalates it to critical."""
+    return (
+        "on: workflow_dispatch\n"
+        "jobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: echo \"${{ github.event.inputs.x }}\"\n"
+        f"        env:\n          TOKEN: ${{{{ secrets.{secret_name} }}}}\n"
+    )
+
+
+class TestHighPrivilegeSecretList(unittest.TestCase):
+    """The escalate-to-critical list is documented in PLAYBOOK.md and in the
+    security-audit skill, and is deliberately exhaustive. It drifted once:
+    the docs broadened it while the regex kept two vendor-specific whole-name
+    literals, so SSH_PRIVATE_KEY and DEPLOY_KEY in an injectable workflow were
+    reported High instead of Critical. These cases pin each documented term to
+    a concrete secret name."""
+
+    ESCALATES = [
+        "SUPABASE_SERVICE_ROLE_KEY",  # via service_role
+        "AWS_SECRET_ACCESS_KEY",      # via aws_secret
+        "AWS_SECRET_KEY",             # via aws_secret -- missed by the old literal
+        "SSH_PRIVATE_KEY",            # via private_key -- previously missed
+        "DEPLOY_KEY",                 # via deploy     -- previously missed
+        "GH_WRITE_TOKEN",             # via write      -- previously missed
+        "ADMIN_TOKEN",
+        "ROOT_PASSWORD",
+        "MASTER_KEY",
+    ]
+
+    # Ordinary credentials: still a High injection finding, but not critical.
+    DOES_NOT_ESCALATE = ["NPM_TOKEN", "SENTRY_DSN", "SLACK_WEBHOOK", "READ_ONLY_KEY"]
+
+    def _ids_for(self, secret_name):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, ".github", "workflows", "w.yml"), _workflow_with_secret(secret_name))
+            return [f.check_id for f in run_ci(root)]
+
+    def test_high_privilege_names_escalate_to_critical(self):
+        for name in self.ESCALATES:
+            with self.subTest(secret=name):
+                self.assertIn("ci.injection_with_high_privilege_secret_in_scope", self._ids_for(name))
+
+    def test_ordinary_names_stay_high_not_critical(self):
+        for name in self.DOES_NOT_ESCALATE:
+            with self.subTest(secret=name):
+                ids = self._ids_for(name)
+                self.assertNotIn("ci.injection_with_high_privilege_secret_in_scope", ids)
+                self.assertIn("ci.script_injection_in_run_block", ids)
+
+    def test_dropped_literals_still_covered_by_shorter_fragments(self):
+        """The two whole-name literals removed from the regex must stay
+        covered, or this change would be a silent regression."""
+        for name in ("SUPABASE_SERVICE_ROLE_KEY", "AWS_SECRET_ACCESS_KEY"):
+            with self.subTest(secret=name):
+                self.assertTrue(ci_checker.HIGH_PRIV_SECRET_NAME.search(name))
+
+
+class TestDocsMatchTheCode(unittest.TestCase):
+    """The list lives in three places on purpose (code, PLAYBOOK.md, and the
+    skill) because two of them are prose an agent follows without running the
+    code. That is exactly how it drifted before -- so assert they agree."""
+
+    REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    TERMS = {"service_role", "admin", "root", "master", "write", "deploy", "aws_secret", "private_key"}
+
+    def test_regex_contains_exactly_the_documented_terms(self):
+        self.assertEqual(set(ci_checker.HIGH_PRIV_SECRET_NAME.pattern.split("(?i)(")[1].rstrip(")").split("|")), self.TERMS)
+
+    def _assert_doc_lists_every_term(self, relpath):
+        path = os.path.join(self.REPO_ROOT, relpath)
+        if not os.path.isfile(path):
+            self.skipTest(f"{relpath} not present")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read().lower()
+        for term in sorted(self.TERMS):
+            with self.subTest(doc=relpath, term=term):
+                self.assertIn(term, text, f"{relpath} does not document '{term}'")
+
+    def test_playbook_documents_every_term(self):
+        self._assert_doc_lists_every_term("PLAYBOOK.md")
+
+    def test_skill_documents_every_term(self):
+        self._assert_doc_lists_every_term(os.path.join(".claude", "skills", "security-audit", "SKILL.md"))
+
+
 if __name__ == "__main__":
     unittest.main()
