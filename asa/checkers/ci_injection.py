@@ -36,7 +36,24 @@ CHECK_IDS = [
 ]
 
 EVENT_INTERPOLATION = re.compile(r"\$\{\{\s*(github\.event\.[a-zA-Z0-9_.]+|github\.head_ref)\s*\}\}")
-HIGH_PRIV_SECRET_NAME = re.compile(r"(?i)(service_role|admin|root|master|SUPABASE_SERVICE_ROLE_KEY|AWS_SECRET_ACCESS_KEY)")
+# Secret NAME fragments that make an injectable workflow critical rather
+# than merely high. Matched case-insensitively as substrings, so these are
+# fragments, not whole names: "aws_secret" catches AWS_SECRET_ACCESS_KEY and
+# AWS_SECRET_KEY alike.
+#
+# This list is the one PLAYBOOK.md and the security-audit skill document,
+# and it is deliberately EXHAUSTIVE -- an open-ended "...or similar" is what
+# makes two auditors disagree about the same workflow. Adding a term here
+# means adding it to those two documents in the same commit.
+#
+# It previously carried two whole-name literals, SUPABASE_SERVICE_ROLE_KEY
+# and AWS_SECRET_ACCESS_KEY, added reactively from single real findings.
+# Both were redundant under substring matching -- "service_role" already
+# covered the first, and "aws_secret" now covers the second while also
+# catching the names the literal missed.
+HIGH_PRIV_SECRET_NAME = re.compile(
+    r"(?i)(service_role|admin|root|master|write|deploy|aws_secret|private_key)"
+)
 SECRETS_REF = re.compile(r"\$\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
