@@ -123,12 +123,21 @@ guarantee.
 
 ## Don't want to install the CLI?
 
-[`PLAYBOOK.md`](PLAYBOOK.md) is the same audit as a set of instructions
-for whatever agent you already use and trust — paste it in and say "audit
-this project." No install, nothing to trust but your own agent. Less
-reliable than the CLI (no test suite backing it — an LLM re-derives each
-check from prose every run instead of running tested code), but useful
-when installing someone else's tool isn't an option.
+Two ways to run the same audit with nothing installed. Both are prose an
+agent follows, so both are less reliable than the CLI — an LLM re-derives
+each check from text every run instead of running tested code — but
+useful when installing someone else's tool isn't an option.
+
+**Using Claude Code:** copy
+[`.claude/skills/security-audit/`](.claude/skills/security-audit/SKILL.md)
+into `~/.claude/skills/` and just ask it to audit something. The skill
+loads itself when the request calls for it; there's nothing to paste and
+nothing to remember. It's one self-contained file and covers every check
+ID the CLI ships.
+
+**Using any other agent:** [`PLAYBOOK.md`](PLAYBOOK.md) is the same audit
+written for whatever agent you already use and trust — paste it in and
+say "audit this project."
 
 ## Contributing
 
