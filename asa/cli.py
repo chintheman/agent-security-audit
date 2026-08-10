@@ -130,6 +130,8 @@ def cmd_scan(args) -> int:
         return exitcodes.ERROR
 
     context = {}
+    if args.allow_audit_tools:
+        context["allow_audit_tools"] = True
     if args.baseline:
         try:
             context.update(_load_baseline(args.baseline))
@@ -269,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--include-vendored", action="store_true")
     s.add_argument("--baseline", default=None, help="Path to a prior scan's JSON output, for drift checks")
     s.add_argument("--host", default=None, help="Scan a remote box over SSH instead of the local filesystem (e.g. user@myhost). Uses your existing SSH access -- this tool never manages credentials itself.")
+    s.add_argument("--allow-audit-tools", action="store_true", help="Opt in to running your own already-installed `npm audit` / `pip-audit`, which contact the npm/PyPI registries. Off by default -- this is one of the two documented exceptions to the no-outbound-calls rule.")
     s.add_argument("--ai", action="store_true", help="Opt in to AI-assisted classification of unrecognized directories and fix-phrasing. Requires ASA_LLM_API_KEY (your own key). Never combined with --host in v1.")
     s.add_argument("--verbose", action="store_true", help="Show full per-category detail in term output (md/html always show it)")
     s.set_defaults(func=cmd_scan)

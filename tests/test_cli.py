@@ -260,6 +260,57 @@ class TestAiFlag(unittest.TestCase):
             self.assertIn("no API key", err)
 
 
+class TestAllowAuditToolsFlag(unittest.TestCase):
+    """The flag was documented in README/SECURITY/CONTRIBUTING and honored by
+    supply_chain.py via context["allow_audit_tools"] long before argparse
+    actually defined it -- so it parsed nowhere and the two audit-tool checks
+    were unreachable from the CLI. These tests assert the wiring end to end
+    (flag -> context -> checker), not just that the flag parses."""
+
+    def _node_project(self, root):
+        write(os.path.join(root, "package.json"), '{"name": "x", "version": "1.0.0"}\n')
+
+    def test_off_by_default_never_runs_audit_tools(self):
+        with tempfile.TemporaryDirectory() as root:
+            self._node_project(root)
+            with mock.patch("asa.checkers.supply_chain._run_npm_audit", return_value=[]) as npm, \
+                 mock.patch("asa.checkers.supply_chain._run_pip_audit", return_value=[]) as pip:
+                run_cli(["scan", root])
+            npm.assert_not_called()
+            pip.assert_not_called()
+
+    def test_flag_reaches_the_checker(self):
+        with tempfile.TemporaryDirectory() as root:
+            self._node_project(root)
+            with mock.patch("asa.checkers.supply_chain._run_npm_audit", return_value=[]) as npm, \
+                 mock.patch("asa.checkers.supply_chain._run_pip_audit", return_value=[]) as pip:
+                run_cli(["scan", root, "--allow-audit-tools"])
+            npm.assert_called_once()
+            pip.assert_called_once()
+
+    def test_findings_from_audit_tools_reach_the_report(self):
+        from asa.finding import Category, Evidence, Finding, Severity
+        fake = Finding(
+            check_id="supply_chain.npm_audit_findings", category=Category.SUPPLY_CHAIN,
+            severity=Severity.HIGH, title="Known vulnerability in leftpad",
+            evidence=Evidence(file="package.json", variable_name="leftpad"),
+            fix="Upgrade leftpad to 1.2.3", fix_time_estimate="varies",
+            location="package.json (leftpad)",
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self._node_project(root)
+            with mock.patch("asa.checkers.supply_chain._run_npm_audit", return_value=[fake]), \
+                 mock.patch("asa.checkers.supply_chain._run_pip_audit", return_value=[]):
+                code, out, err = run_cli(["scan", root, "--allow-audit-tools", "--format", "json"])
+            check_ids = [
+                f["check_id"]
+                for section in json.loads(out)["detail_sections"]
+                for f in section["findings"]
+            ]
+            self.assertIn("supply_chain.npm_audit_findings", check_ids)
+            self.assertEqual(code, exitcodes.FINDINGS_PRESENT)
+
+
 class TestFixCommand(unittest.TestCase):
     def test_dry_run_applies_nothing(self):
         with tempfile.TemporaryDirectory() as root:
