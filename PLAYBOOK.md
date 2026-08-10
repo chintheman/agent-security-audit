@@ -10,6 +10,12 @@ audit of a codebase or machine, without installing anything.
 point it at this file directly if your agent can read a URL/file path — and
 say: *"Follow this playbook and audit [this project / this machine]."*
 
+**Using Claude Code? Use the skill instead:** copy
+[`.claude/skills/security-audit/`](.claude/skills/security-audit/SKILL.md)
+into `~/.claude/skills/` and it loads itself whenever you ask for an audit
+— no pasting, nothing to remember. Same six categories as this file, kept
+in step with the checker source.
+
 This is the no-install alternative to
 [`agent-security-audit`](https://github.com/chintheman/agent-security-audit),
 the tested CLI this playbook is derived from. The CLI is more reliable (its
