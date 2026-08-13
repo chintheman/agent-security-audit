@@ -1,4 +1,4 @@
-"""Network/service exposure checks. Five checks:
+"""Network/service exposure checks. Six checks:
   1. service_bound_all_interfaces -- 0.0.0.0 bind instead of loopback
   2. tunnel_without_access_policy -- Cloudflare Tunnel ingress to a loopback
      service with no access policy alongside it
@@ -7,6 +7,9 @@
   4. firewall_disabled -- best-effort OS check (config file where one
      exists, a read-only local command otherwise)
   5. screen_lock_disabled -- best-effort, always lower confidence
+  6. internet_facing_service_without_access_log -- Cloudflare Tunnel
+     loopback target with no fresh per-request origin access log
+     (presence/liveness heuristic — never parses log content)
 
 Best-effort checks are marked confidence="medium" or lower and never crash
 if the underlying command/file isn't available -- they degrade to "unknown,
@@ -18,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 from asa.finding import Category, Evidence, Finding, Severity
 from asa.manifest import iter_files
@@ -29,6 +33,7 @@ CHECK_IDS = [
     "network.dual_exposure_http_and_https",
     "network.firewall_disabled",
     "network.screen_lock_disabled",
+    "network.internet_facing_service_without_access_log",
 ]
 
 BIND_ALL_PATTERNS = [
@@ -257,6 +262,109 @@ def _unknown_screen_lock_finding() -> Finding:
     )
 
 
+def _check_service_without_access_log(manifest, root) -> list:
+    """Internet-facing loopback services (via Cloudflare Tunnel) should have
+    per-request origin access logging so spoofed-identity bot traffic is
+    discoverable after the fact. Presence/liveness heuristic only — never
+    parses log content (that is a monitoring job, not a static scan).
+
+    Evidence ladder (best-effort, matches firewall_disabled's degrade-not-
+    crash pattern):
+      * ~/.hermes/logs/access.jsonl (or HOME-relative) exists and was
+        modified within the last 7 days → logging present, no finding.
+      * Otherwise, if the scanned tree contains origin server source with
+        an access-log middleware marker (`@app.middleware("http")` + a
+        user-agent reference in the same .py file) → INFO finding with
+        confidence=low: the code exists but there is no live log to prove
+        it runs in production.
+      * Neither signal → MEDIUM finding: an internet-facing loopback
+        service with no discoverable per-request access log.
+    """
+    findings = []
+    home_scan = _home_is_scan_root(manifest)
+    marker_app = re.compile(r"@app\.middleware\(\s*[\"']http[\"']\s*\)", re.IGNORECASE)
+    marker_ua = re.compile(r"user-agent", re.IGNORECASE)
+
+    for comp in manifest.components_of("cloudflared_config"):
+        comp_dir = comp.root if os.path.isabs(comp.root) else os.path.join(root, comp.root)
+        for fname in comp.signature_files:
+            path = os.path.join(comp_dir, fname)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            if "ingress:" not in content:
+                continue
+            targets = re.findall(
+                r"service:\s*(https?://(?:127\.0\.0\.1|localhost)(?::\d+)?)", content
+            )
+            if not targets:
+                continue
+
+            log_path = os.path.join(os.path.expanduser("~"), ".hermes", "logs", "access.jsonl")
+            log_exists = os.path.isfile(log_path)
+            log_fresh = False
+            log_mtime = None
+            if log_exists:
+                try:
+                    log_mtime = os.path.getmtime(log_path)
+                    log_fresh = (time.time() - log_mtime) < 7 * 86400
+                except OSError:
+                    pass
+
+            # Supporting evidence only: origin server source in the scanned
+            # tree that carries an access-log middleware marker. Never the
+            # sole basis for a finding (source presence != running in prod).
+            source_marker = False
+            if not home_scan:
+                for filepath in iter_files(root):
+                    if not filepath.endswith(".py"):
+                        continue
+                    try:
+                        if os.path.getsize(filepath) > 500_000:
+                            continue
+                        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+                            src = fh.read()
+                    except OSError:
+                        continue
+                    if marker_app.search(src) and marker_ua.search(src):
+                        source_marker = True
+                        break
+
+            detail = {
+                "service": targets[0],
+                "log_checked": log_path,
+                "log_exists": log_exists,
+                "log_fresh": log_fresh,
+                "log_mtime": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(log_mtime)) if log_mtime else None,
+                "source_marker": source_marker,
+            }
+            ev_file = os.path.relpath(path, root) if path.startswith(root) else path
+
+            if log_exists and log_fresh:
+                continue
+            if source_marker:
+                findings.append(Finding(
+                    check_id="network.internet_facing_service_without_access_log",
+                    category=CATEGORY, severity=Severity.INFO,
+                    title=f"{fname} tunnels a local service to the internet; access-log code exists in scanned source but no fresh log observed",
+                    evidence=Evidence(file=ev_file, detail=detail),
+                    fix="Verify the origin service actually runs the access-log code (deployment, not just source), or add per-request access logging (method, path, status, UA, IP, timestamp — never query strings or secret headers) so spoofed-identity traffic is discoverable.",
+                    fix_time_estimate="15 min", location=path, confidence="low",
+                ))
+            else:
+                findings.append(Finding(
+                    check_id="network.internet_facing_service_without_access_log",
+                    category=CATEGORY, severity=Severity.MEDIUM,
+                    title=f"{fname} tunnels a local service to the internet with no discoverable per-request access log",
+                    evidence=Evidence(file=ev_file, detail=detail),
+                    fix="Add per-request access logging (method, path, status, UA, IP, timestamp — never query strings or secret headers) to the origin service in front of this tunnel, so spoofed-identity traffic is discoverable after the fact.",
+                    fix_time_estimate="30 min", location=path,
+                ))
+    return findings
+
+
 def run(manifest, root, context=None) -> list:
     findings = []
     findings += _check_bound_all_interfaces(manifest, root)
@@ -264,4 +372,5 @@ def run(manifest, root, context=None) -> list:
     findings += _check_dual_exposure(manifest, root)
     findings += _check_firewall_disabled(manifest, root)
     findings += _check_screen_lock_disabled(manifest, root)
+    findings += _check_service_without_access_log(manifest, root)
     return findings

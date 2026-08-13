@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -214,6 +215,66 @@ class TestCleanNoFalsePositives(unittest.TestCase):
             write(os.path.join(root, "docker-compose.yml"), 'services:\n  web:\n    ports:\n      - "127.0.0.1:8080:80"\n')
             findings = run_network(root)
             self.assertEqual(findings, [])
+
+
+class TestServiceWithoutAccessLog(unittest.TestCase):
+    def _ingress(self, root, target="http://localhost:9119"):
+        write(
+            os.path.join(root, ".cloudflared", "config.yml"),
+            f"tunnel: mytunnel\ningress:\n  - hostname: dash.example.com\n    service: {target}\n  - service: http_status:404\n",
+        )
+
+    def _hits(self, findings):
+        return [f for f in findings if f.check_id == "network.internet_facing_service_without_access_log"]
+
+    def test_flags_loopback_ingress_without_access_log(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, {"HOME": root}):
+            self._ingress(root)
+            findings = run_network(root)
+            hits = self._hits(findings)
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].severity.value, "medium")
+            self.assertTrue(hits[0].fix_time_estimate)
+
+    def test_no_finding_when_access_log_exists_and_fresh(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, {"HOME": root}):
+            self._ingress(root)
+            write(os.path.join(root, ".hermes", "logs", "access.jsonl"), '{"origin":"hermes-web"}\n')
+            os.utime(os.path.join(root, ".hermes", "logs", "access.jsonl"), None)  # now
+            findings = run_network(root)
+            self.assertEqual(self._hits(findings), [])
+
+    def test_flags_when_access_log_stale_beyond_window(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, {"HOME": root}):
+            self._ingress(root)
+            log = os.path.join(root, ".hermes", "logs", "access.jsonl")
+            write(log, '{"origin":"hermes-web"}\n')
+            old = time.time() - 10 * 86400
+            os.utime(log, (old, old))
+            findings = run_network(root)
+            hits = self._hits(findings)
+            self.assertEqual(len(hits), 1)
+            self.assertFalse(hits[0].evidence.detail["log_fresh"])
+
+    def test_info_finding_when_source_marker_present_but_no_live_log(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as fake_home, \
+             mock.patch.dict(os.environ, {"HOME": fake_home}):
+            self._ingress(root)
+            write(
+                os.path.join(root, "web_server.py"),
+                'from fastapi import FastAPI\napp = FastAPI()\n@app.middleware("http")\nasync def log_mw(request, call_next):\n    ua = request.headers.get("user-agent", "")\n',
+            )
+            findings = run_network(root)
+            hits = self._hits(findings)
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].severity.value, "info")
+            self.assertEqual(hits[0].confidence, "low")
+
+    def test_does_not_flag_non_loopback_target(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.dict(os.environ, {"HOME": root}):
+            self._ingress(root, target="http://internal-server:9119")
+            findings = run_network(root)
+            self.assertEqual(self._hits(findings), [])
 
 
 if __name__ == "__main__":
