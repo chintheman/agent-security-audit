@@ -54,17 +54,18 @@ NEED YOU (5):
 
 ## Install
 
-```
-pip install agent-security-audit
-```
-
-Or run it straight from a clone, no install needed:
+Not on PyPI yet — run from a clone. The tool is stdlib-only (zero
+dependencies), so no install step beyond a plain Python 3.9+:
 
 ```
 git clone https://github.com/chintheman/agent-security-audit
 cd agent-security-audit
 python3 -m asa scan /path/to/project
 ```
+
+If you use `uv`, `uv tool install .` from the clone gives you a global `asa`
+command. (`pip install agent-security-audit` will work once this is
+published to PyPI.)
 
 ## Usage
 
