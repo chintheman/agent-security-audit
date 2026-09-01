@@ -20,7 +20,7 @@ tool to install, no network access, nothing to trust but this file and the
 agent following it.
 
 This encodes the methodology behind `agent-security-audit` — six categories,
-32 checks — derived from a real multi-day audit that turned up hardcoded
+34 checks — derived from a real multi-day audit that turned up hardcoded
 secrets, world-readable credential files, an exposed dashboard, unpinned MCP
 servers with full tool access, and a live GitHub Actions injection
 vulnerability. Check IDs below match the tool's, so results are comparable
@@ -282,6 +282,17 @@ plaintext port (**80, 8080, 8000**, or another plain port). A login form served
 correctly over HTTPS but also reachable in plaintext silently downgrades
 security. Parse both compose `HOST:CONTAINER` pairs and bare `:NNNN`.
 
+**`network.internet_facing_service_without_access_log`** — Medium (Info +
+confidence low if access-log code exists in source but no fresh log
+observed).
+A cloudflared tunnel (or equivalent) routing a loopback service to the
+internet with no discoverable per-request origin access log. Without one
+you can't see who is hitting the service, so spoofed-identity traffic is
+undiscoverable after the fact. Presence/liveness heuristic: looks for a
+log file and its freshness; never parses log content. Fix: add per-request
+access logging (method, path, status, UA, IP, timestamp — never query
+strings or secret headers) to the origin service.
+
 **`network.firewall_disabled`** — Medium; Info + confidence low if
 undeterminable.
 Linux: `/etc/ufw/ufw.conf` containing `ENABLED=no`. macOS:
@@ -340,6 +351,29 @@ Flag when an untrusted-input keyword and a high-impact keyword both appear and
 no approval marker does. Both of these are keyword heuristics over config text
 — keep them at low confidence rather than pretending to a precision they don't
 have.
+
+**`agent.docs_driven_install_unpinned`** — Medium (LOW, distinct title, for
+npx-only hits), confidence low.
+A config that can (1) run unpinned package installs — `pip`/`pip3`/`uv
+install`, `npm`/`pnpm`/`yarn` `install|i|add`, `npx`, `uv add`, `uv pip
+install`, `uv tool install` — with no exact version pin, (2) ingest
+untrusted web content (`web_fetch`, `read_webpage`, `web_search`, email,
+rss — same keyword set as prompt_injection_reachability), and (3) has no
+approval gate between them, or a gate that is affirmatively off
+(`approvals: mode: off`/`yolo`, `requireConfirmation: false`). This is the
+llms.txt supply-chain vector: docs say "install this package", the agent
+installs a name that may not exist yet, and whoever registers it first
+gets code execution inside the agent. `@latest`/`@next`/`@beta`/`@canary`
+are mutable tags, NOT pins — they re-resolve on every run, so `npx
+evil@latest` is unpinned. A bare `npx` grant is unpinned remote execution
+by design (emit LOW, not Medium, to avoid firing on every stock MCP
+server). With NO approvals declaration anywhere, assume the platform
+default (Hermes ships `smart`) and do NOT flag. Medium only when the gate
+is affirmatively off AND the grant is an explicit install (not npx-only).
+The registry-ownership half (does the package exist, who owns it) is
+inherently dynamic — before installing anything a vendor doc recommends,
+run `pip index versions <pkg>` / `npm view <pkg>` and check the publisher;
+a static scan can only flag the config shape, not resolve names.
 
 ### 5. Supply chain
 

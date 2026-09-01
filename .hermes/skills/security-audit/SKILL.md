@@ -19,7 +19,7 @@ platforms: [macos, linux]
 
 Run the complete, tested security audit from
 [chintheman/agent-security-audit](https://github.com/chintheman/agent-security-audit)
-over a machine, home directory, or project. Six categories, 32+ checks:
+over a machine, home directory, or project. Six categories, 34 checks:
 **Secrets · Permissions · Network · Agent blast radius · Supply chain ·
 GitHub Actions injection** — including the llms.txt vector
 (unpinned install + untrusted web channel + approval gate off).
