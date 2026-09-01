@@ -18,10 +18,15 @@ The config-level precondition is three things in one agent config:
      not the individual entries. Static config shape only -- the actual
      registry-ownership check (does the package exist / who owns it) is
      inherently dynamic and belongs in the fix workflow, not in a scan.
+
+Approval-gate defaults matter: Hermes ships `approvals.mode: smart` and
+Claude Code ships confirmation prompts. Absence of an approvals
+declaration therefore defaults to GATED (no finding), not ungated.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -35,40 +40,43 @@ CHECK_IDS = ["agent.docs_driven_install_unpinned"]
 # special: it resolves and executes remote code by design, so ANY bare
 # npx grant (no @version) is effectively unpinned remote execution.
 INSTALL_GRANT = re.compile(
-    r"(?i)\b(?:pip|pip3|uv)\s+install\b"
-    r"|\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\b"
+    r"(?i)\b(?:pip|pip3)\s+install\b"
+    r"|\buv\s+(?:add|pip\s+install|tool\s+install)\b"
+    r"|\b(?:npm|pnpm)\s+(?:install|i|add)\b"
+    r"|\byarn\s+(?:install|add)\b"
     r"|\bnpx\b"
 )
 
 # A grant that names at least one concrete version pin is NOT unpinned.
-VERSION_PIN = re.compile(r"(?i)@\d+(?:\.\d+){0,2}|==\s*\d|~\=\s*\d|@latest")
-GLOBAL_FLAG = re.compile(r"(?i)(?:-g|--global|global\s+add)")
+# `@latest` / `@next` / `@beta` / `@canary` are MUTABLE tags -- they
+# re-resolve on every run and are exactly the attack shape, so they are
+# handled separately (MUTABLE_TAG) and force unpinned.
+VERSION_PIN = re.compile(r"(?i)@\d+(?:\.\d+){0,2}|==\s*\d")
+MUTABLE_TAG = re.compile(r"(?i)@(?:latest|next|beta|canary|\*)")
 
 # Hermes profiles express capability as toolsets, not permission strings:
 # the `terminal` toolset is what can run `pip install` / `npx`; `web`
-# is the untrusted-content channel. Both list-item (`  - terminal`)
-# and inline (`toolsets: [web, terminal]`) shapes are covered.
-HERMES_TERMINAL_TOOLSET = re.compile(r"(?im)(?:^[ \t]*-[ \t]*terminal\b|toolsets?\s*[:=][^\n]*terminal)")
-HERMES_WEB_TOOLSET = re.compile(r"(?im)(?:^[ \t]*-[ \t]*web\b|toolsets?\s*[:=][^\n]*web)")
+# is the untrusted-content channel. Detection is key-aware line-scanning
+# (see _hermes_toolsets) so `disabled_toolsets:` never counts as a grant.
+INLINE_TOOLSETS = re.compile(r"(?i)^[ \t]*toolsets?\s*:\s*\[([^\]]*)\]")
+
+# Hermes approvals gates. Absence of an approvals declaration is GATED.
 HERMES_NO_APPROVAL = re.compile(
-    r"(?im)approvals?\s*:\s*(?:off|yolo|none)\s*$"
-    r"|approvals?\s*:\s*mode\s*:\s*(?:off|yolo|none)"
+    r"(?im)^\s*approvals?\s*:\s*(?:off|yolo|none)\s*$"
+    r"|^\s*approvals?\s*:\s*[^\n]*\n\s*mode\s*:\s*(?:off|yolo|none)\s*$"
 )
 # Any other approvals mode (manual, smart) IS a gate for Hermes.
 HERMES_APPROVAL_GATED = re.compile(
-    r"(?im)approvals?\s*:\s*(?:manual|smart|ask|require)\b"
-    r"|approvals?\s*:\s*mode\s*:\s*(?:manual|smart|ask|require)\b"
+    r"(?im)^\s*approvals?\s*:\s*(?:manual|smart|ask|require)\b"
+    r"|^\s*approvals?\s*:\s*[^\n]*\n\s*mode\s*:\s*(?:manual|smart|ask|require)\b"
 )
 
+# Claude-style untrusted-input tools.
 UNTRUSTED_INPUT_KEYWORDS = re.compile(
     r"(?i)\b(web[_-]?fetch|read[_-]?webpage|browse|web[_-]?search|gmail|email|"
     r"read[_-]?url|http[_-]?request|fetch[_-]?url|rss|news[_-]?feed|"
     r"web[_-]?extract|web[_-]?scrape)\b"
 )
-APPROVAL_MARKERS = re.compile(
-    r"(?i)\b(requireConfirmation|require_confirmation|approval|confirm|ask[_-]?before)\b"
-)
-HERMES_NO_APPROVAL = re.compile(r"(?i)^\s*approvals?\s*:\s*(off|yolo|none)\s*$", re.MULTILINE)
 
 
 def activates(manifest) -> bool:
@@ -76,22 +84,19 @@ def activates(manifest) -> bool:
 
 
 def _iter_text_configs(manifest, root):
-    """Yield (path, content) for every agent config file the manifest knows."""
+    """Yield (kind, path, content) for every agent config file the manifest knows."""
     seen = set()
     for kind in ("claude_code_config", "mcp_config", "hermes_profile"):
         for comp in manifest.components_of(kind):
             comp_dir = comp.root if os.path.isabs(comp.root) else os.path.join(root, comp.root)
             files = list(comp.signature_files)
-            # hermes_profile components are directories; walk them for
-            # config-shaped files so approvals.mode is visible.
             if kind == "hermes_profile" and os.path.isdir(comp_dir):
                 for dirpath, _, filenames in os.walk(comp_dir):
                     for fname in filenames:
-                        if fname.endswith((".yaml", ".yml", ".json")):
+                        if fname.endswith((".yaml", ".yml", ".json", ".md")):
                             files.append(os.path.relpath(os.path.join(dirpath, fname), comp_dir))
             for fname in files:
-                path = os.path.join(comp_dir, fname) if os.path.isabs(fname) else os.path.join(comp_dir, fname)
-                path = os.path.normpath(path)
+                path = os.path.normpath(os.path.join(comp_dir, fname))
                 if path in seen:
                     continue
                 seen.add(path)
@@ -100,64 +105,194 @@ def _iter_text_configs(manifest, root):
                         content = fh.read()
                 except OSError:
                     continue
-                yield path, content
+                yield kind, path, content
+
+
+def _json_gated(data: dict) -> bool:
+    """Claude/MCP JSON gate: requireConfirmation truthy (true or non-empty
+    list) OR permissions.ask non-empty means an approval gate exists.
+    `requireConfirmation: false` / empty list / absent = NO gate."""
+    perm = data.get("permissions")
+    if not isinstance(perm, dict):
+        perm = {}
+    rc = data.get("requireConfirmation", perm.get("requireConfirmation"))
+    if rc is True:
+        return True
+    if isinstance(rc, list) and rc:
+        return True
+    if isinstance(rc, str) and rc.lower() in ("always", "ask", "true"):
+        return True
+    ask = perm.get("ask")
+    if isinstance(ask, list) and ask:
+        return True
+    return False
+
+
+def _grant_is_unpinned(text: str) -> bool:
+    """True when an install grant has no concrete version pin."""
+    if MUTABLE_TAG.search(text):
+        return True
+    if VERSION_PIN.search(text):
+        return False
+    return True
+
+
+def _has_web_channel(content: str, data: dict | None) -> bool:
+    if UNTRUSTED_INPUT_KEYWORDS.search(content):
+        return True
+    inline = INLINE_TOOLSETS.search(content)
+    if inline and re.search(r"(?i)\bweb\b", inline.group(1)):
+        return True
+    if isinstance(data, dict):
+        # mcpServers: a web-fetch server counts as the untrusted channel
+        servers = data.get("mcpServers")
+        if isinstance(servers, dict):
+            for spec in servers.values():
+                if isinstance(spec, dict):
+                    joined = " ".join(str(spec.get("command", ""))) + " " + " ".join(str(a) for a in spec.get("args", []) if isinstance(a, str))
+                    if UNTRUSTED_INPUT_KEYWORDS.search(joined):
+                        return True
+    return False
+
+
+def _hermes_toolsets(content: str) -> tuple:
+    """Key-aware scan of a Hermes profile config. Returns (has_terminal,
+    has_web, has_install_capability).
+
+    Only list items under an ACTIVE `toolsets:` / `enabled_toolsets:`
+    block count. `disabled_toolsets:` is explicitly ignored, and list
+    items under any other key (- webhook, - email) are ignored.
+    """
+    has_terminal = False
+    has_web = False
+    has_install_capability = False
+    active_toolsets_key = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if re.match(r"(?i)^toolsets?\s*:", stripped):
+            active_toolsets_key = True
+            inline = INLINE_TOOLSETS.search(line)
+            if inline:
+                inner = inline.group(1)
+                if re.search(r"(?i)\bterminal\b", inner):
+                    has_terminal = True
+                    has_install_capability = True
+                if re.search(r"(?i)\bweb\b", inner):
+                    has_web = True
+            continue
+        if re.match(r"(?i)^(?:disabled|enabled_)?toolsets?\s*:", stripped):
+            # A variant key (disabled_toolsets: / enabled_toolsets:).
+            # enabled_ counts as a grant; disabled_ explicitly does NOT.
+            if re.match(r"(?i)^enabled_toolsets?\s*:", stripped):
+                active_toolsets_key = True
+            else:
+                active_toolsets_key = False
+            continue
+        if active_toolsets_key and stripped.startswith("-"):
+            item = stripped[1:].strip()
+            if re.search(r"(?i)^terminal\b", item):
+                has_terminal = True
+                has_install_capability = True
+            elif re.search(r"(?i)^web\b", item):
+                has_web = True
+        elif not stripped.startswith("-") and stripped and not stripped.startswith("#"):
+            # A new top-level or nested key ends the toolsets block.
+            if re.match(r"(?i)^[a-z0-9_]+:", stripped):
+                active_toolsets_key = False
+    return has_terminal, has_web, has_install_capability
+
+
+def _json_install_grants(data: dict) -> list:
+    """Explicit allow-list entries OR MCP server invocations that look
+    like install grants (command npx/pip/npm with their args)."""
+    out = []
+    perm = data.get("permissions")
+    if isinstance(perm, dict):
+        allow = perm.get("allow")
+        if isinstance(allow, list):
+            out.extend(str(a) for a in allow if INSTALL_GRANT.search(str(a)))
+    servers = data.get("mcpServers")
+    if isinstance(servers, dict):
+        for name, spec in servers.items():
+            if not isinstance(spec, dict):
+                continue
+            command = str(spec.get("command", ""))
+            args = [str(a) for a in spec.get("args", []) if isinstance(a, str)]
+            joined = " ".join([command] + args)
+            if INSTALL_GRANT.search(joined):
+                out.append(f"{command} {' '.join(args)}".strip())
+    return out
 
 
 def run(manifest, root, context=None) -> list:
     findings = []
-    for path, content in _iter_text_configs(manifest, root):
-        rel = os.path.relpath(path, root) if path.startswith(root) else path
 
-        # Install capability: literal pip/npm/npx permission strings
-        # (Claude/MCP shape) OR the Hermes `terminal` toolset.
-        has_install = bool(INSTALL_GRANT.search(content)) or bool(HERMES_TERMINAL_TOOLSET.search(content))
-        if not has_install:
+    # ---- Pass 1: Claude / MCP (JSON) shapes ----
+    for kind, path, content in _iter_text_configs(manifest, root):
+        if kind == "hermes_profile":
+            continue
+        rel = os.path.relpath(path, root) if path.startswith(root) else path
+        if not INSTALL_GRANT.search(content):
             continue
 
-        # Untrusted-content channel present? Without a web/read-input
-        # tool the docs-driven chain can't start.
-        has_web = bool(UNTRUSTED_INPUT_KEYWORDS.search(content)) or bool(HERMES_WEB_TOOLSET.search(content))
+        try:
+            data = json.loads(content)
+        except ValueError:
+            data = None
+
+        if not _has_web_channel(content, data):
+            continue
+
+        if isinstance(data, dict):
+            grants = _json_install_grants(data)
+            if not grants:
+                continue
+            if _json_gated(data):
+                continue
+            unpinned = any(_grant_is_unpinned(g) for g in grants)
+            if not unpinned:
+                continue
+            npx_only = all("npx" in g.lower() for g in grants)
+            findings.append(_finding(rel, Severity.LOW if npx_only else Severity.MEDIUM))
+        else:
+            # YAML/text fallback: per-line pin check.
+            grants = [line for line in content.splitlines() if INSTALL_GRANT.search(line)]
+            if not grants:
+                continue
+            unpinned = any(_grant_is_unpinned(g) for g in grants)
+            if not unpinned:
+                continue
+            npx_only = all("npx" in g.lower() for g in grants)
+            findings.append(_finding(rel, Severity.LOW if npx_only else Severity.MEDIUM))
+
+    # ---- Pass 2: Hermes profiles with component-level gate state ----
+    profile_files = {}
+    for kind, path, content in _iter_text_configs(manifest, root):
+        if kind != "hermes_profile":
+            continue
+        rel = os.path.relpath(path, root) if path.startswith(root) else path
+        profile_files.setdefault(rel, []).append(content)
+
+    for rel, contents in profile_files.items():
+        joined = "\n".join(contents)
+        off = bool(HERMES_NO_APPROVAL.search(joined))
+        gated = bool(HERMES_APPROVAL_GATED.search(joined))
+        # Default when nothing declares approvals: GATED (Hermes ships smart).
+        if not off and (gated or not re.search(r"(?im)^\s*approvals?\s*:", joined)):
+            continue
+        has_terminal, has_web, has_install = _hermes_toolsets(joined)
+        if not (has_install or has_terminal):
+            continue
         if not has_web:
             continue
-
-        # Approval gate present? Hermes profiles: approvals.mode off/yolo
-        # means no gate; manual/smart IS a gate. Claude-style: any
-        # approval marker means a gate.
-        hermes_off = HERMES_NO_APPROVAL.search(content)
-        if not hermes_off and (APPROVAL_MARKERS.search(content) or HERMES_APPROVAL_GATED.search(content)):
-            continue
-
-        # Hermes profiles: terminal toolset is by definition unpinned
-        # (any package can be fetched); flag directly.
-        if HERMES_TERMINAL_TOOLSET.search(content):
-            findings.append(_finding(rel))
-            continue
-
-        # Claude/MCP shape: did the install grants come with version
-        # pins? Walk each install-looking line; flag the file if ANY
-        # install grant is unpinned. npx without a pin always counts
-        # (remote exec).
-        unpinned_found = False
-        for line in content.splitlines():
-            if not INSTALL_GRANT.search(line):
-                continue
-            if "npx" in line.lower() and not VERSION_PIN.search(line):
-                unpinned_found = True
-                break
-            if VERSION_PIN.search(line):
-                continue
-            if GLOBAL_FLAG.search(line) or "install" in line.lower():
-                unpinned_found = True
-                break
-        if unpinned_found:
-            findings.append(_finding(rel))
+        findings.append(_finding(rel, Severity.MEDIUM))
     return findings
 
 
-def _finding(rel: str) -> Finding:
+def _finding(rel: str, severity: Severity) -> Finding:
     return Finding(
         check_id="agent.docs_driven_install_unpinned",
-        category=CATEGORY, severity=Severity.MEDIUM,
+        category=CATEGORY, severity=severity,
         title=f"{os.path.basename(rel)} grants unpinned package installs while also reading untrusted web content, with no approval gate",
         evidence=Evidence(file=rel),
         fix=("Pin every install to an exact version (pip pkg==x.y.z, npm pkg@x.y.z, npx pkg@x.y.z) and add an approval "
