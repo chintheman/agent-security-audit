@@ -134,7 +134,15 @@ useful when installing someone else's tool isn't an option.
 into `~/.claude/skills/` and just ask it to audit something. The skill
 loads itself when the request calls for it; there's nothing to paste and
 nothing to remember. It's one self-contained file and covers every check
-ID the CLI ships.
+ID the CLI ships. (Claude Code can also just run the CLI directly —
+`python3 -m asa scan <path>` — since it has shell access.)
+
+**Using Hermes:** copy
+[`.hermes/skills/security-audit/`](.hermes/skills/security-audit/SKILL.md)
+into `~/.hermes/skills/<category>/` (e.g. `security/`) and any Hermes
+session handles "audit my machine" or "audit this repo" as a full run —
+it prefers the tested CLI when present and falls back to this
+methodology when it can't run.
 
 **Using any other agent:** [`PLAYBOOK.md`](PLAYBOOK.md) is the same audit
 written for whatever agent you already use and trust — paste it in and
