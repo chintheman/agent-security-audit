@@ -170,5 +170,113 @@ class TestCleanNoFalsePositives(unittest.TestCase):
             self.assertEqual(findings, [])
 
 
+class TestExfiltrationTriad(unittest.TestCase):
+    def test_flags_all_three_legs_in_one_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, ".mcp.json"), json.dumps({
+                "mcpServers": {
+                    "ops": {
+                        "command": "npx",
+                        "args": ["-y", "ops-agent-mcp@1.0.0"],
+                        "description": "filesystem read, web_fetch for docs, and http_post webhook alerts",
+                    }
+                }
+            }))
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.exfiltration_triad"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].severity.value, "high")
+            self.assertEqual(hits[0].confidence, "low")
+            self.assertTrue(hits[0].evidence.detail["has_private_data_access"])
+            self.assertTrue(hits[0].evidence.detail["has_untrusted_content_ingestion"])
+            self.assertTrue(hits[0].evidence.detail["has_outbound_channel"])
+
+    def test_two_of_three_legs_not_flagged(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, ".mcp.json"), json.dumps({
+                "mcpServers": {
+                    "reader": {
+                        "command": "npx",
+                        "args": ["-y", "docs-mcp@1.0.0"],
+                        "description": "filesystem read and web_fetch for docs, no outbound channel",
+                    }
+                }
+            }))
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.exfiltration_triad"]
+            self.assertEqual(hits, [])
+
+    def test_hermes_profile_file_scanned(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, ".hermes", "profiles", "ops", "config.yaml"),
+                "tools:\n  - filesystem\n  - web_fetch\n  - send_message\n",
+            )
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.exfiltration_triad"]
+            self.assertEqual(len(hits), 1)
+
+    def test_fixture_project_on_disk(self):
+        fixture_root = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "fixtures", "exfiltration_triad_project"
+        )
+        findings = run_agent(fixture_root)
+        hits = [f for f in findings if f.check_id == "agent.exfiltration_triad"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].evidence.file, ".mcp.json")
+
+
+class TestTrustsMcpToolAnnotations(unittest.TestCase):
+    def test_flags_blanket_server_wildcard(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, ".claude", "settings.json"), json.dumps({
+                "permissions": {"allow": ["mcp__github__*", "Read"]}
+            }))
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.trusts_mcp_tool_annotations"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].severity.value, "medium")
+            self.assertEqual(hits[0].confidence, "high")
+            self.assertEqual(hits[0].evidence.snippet, "mcp__github__*")
+
+    def test_flags_global_mcp_wildcard(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, ".claude", "settings.json"), json.dumps({
+                "permissions": {"allow": ["mcp__*"]}
+            }))
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.trusts_mcp_tool_annotations"]
+            self.assertEqual(len(hits), 1)
+
+    def test_scoped_tool_allow_not_flagged(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, ".claude", "settings.json"), json.dumps({
+                "permissions": {"allow": ["mcp__github__create_issue", "Read"]}
+            }))
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.trusts_mcp_tool_annotations"]
+            self.assertEqual(hits, [])
+
+    def test_flags_annotation_trust_keyword_in_config_text(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, ".hermes", "profiles", "ops", "config.yaml"),
+                "mcp_policy: auto_approve tools where readOnlyHint is true\n",
+            )
+            findings = run_agent(root)
+            hits = [f for f in findings if f.check_id == "agent.trusts_mcp_tool_annotations"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].confidence, "medium")
+
+    def test_fixture_project_on_disk(self):
+        fixture_root = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "fixtures", "mcp_annotation_trust_project"
+        )
+        findings = run_agent(fixture_root)
+        hits = [f for f in findings if f.check_id == "agent.trusts_mcp_tool_annotations"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].evidence.snippet, "mcp__github__*")
+
+
 if __name__ == "__main__":
     unittest.main()

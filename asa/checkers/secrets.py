@@ -1,7 +1,7 @@
 """Secrets/credential-hygiene checks. The richest category, built first
 because it's the one with the most real audit findings behind it.
 
-Seven checks:
+Eight checks:
   1. hardcoded_value_instead_of_env_ref  -- config file, credential-shaped
      key, literal value instead of an env-var reference
   2. credential_shaped_string_anywhere   -- shape scan across all text
@@ -11,6 +11,8 @@ Seven checks:
      across unrelated components
   6. duplicate_secret_value_different_names -- same value, two different names
   7. secret_in_git_history               -- credential shape in `git log -p`
+  8. seed_phrase_detected                -- a run of 12/15/18/21/24
+     consecutive BIP-39 wordlist words in a text file, or in `git log -p`
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import re
 import subprocess
 
 from asa import redact
+from asa.data.bip39_wordlist import BIP39_WORDLIST_SET
 from asa.finding import Category, Evidence, Finding, Severity
 from asa.manifest import iter_files
 
@@ -32,6 +35,7 @@ CHECK_IDS = [
     "secrets.generic_env_var_name_collision",
     "secrets.duplicate_secret_value_different_names",
     "secrets.secret_in_git_history",
+    "secrets.seed_phrase_detected",
 ]
 
 CONFIG_EXTENSIONS = {".yaml", ".yml", ".json", ".toml", ".ini", ".conf", ".cfg", ".service"}
@@ -300,6 +304,128 @@ def _check_duplicate_secret_value_different_names(manifest, root) -> list:
 
 CREDENTIAL_FILE_GLOBS = ["*.env*", "*.pem", "*.key", "*secret*", "*credential*", "*password*"]
 
+# Broader than CREDENTIAL_FILE_GLOBS on purpose -- a seed phrase is just as
+# likely to end up in a plain notes file or a wallet-export text dump as in
+# something named "secret" or "credential". Still bounded, not "every
+# path", so a `git log -p --all` on a large history stays tractable.
+SEED_PHRASE_GIT_GLOBS = CREDENTIAL_FILE_GLOBS + ["*.txt", "*.md", "*seed*", "*wallet*", "*mnemonic*"]
+
+# Exact word counts a BIP-39 seed phrase can be -- 12/15/18/21/24 words,
+# never anything in between (each length corresponds to a specific
+# entropy+checksum size in the spec).
+SEED_PHRASE_LENGTHS = {12, 15, 18, 21, 24}
+
+# The module we ship the wordlist in -- never flagged by the check that
+# uses it, or every scan of this project's own source would trip on its
+# own data file.
+SEED_PHRASE_WORDLIST_FILENAME = "bip39_wordlist.py"
+
+
+def _seed_phrase_runs(tokens: list) -> list:
+    """tokens: plain word strings in source order (already whitespace-split,
+    so anything with attached punctuation or mixed case already failed to
+    match a wordlist entry and breaks a run -- that's what keeps this low
+    on false positives without any extra regex).
+
+    Returns [(start_index, word_count), ...] for every MAXIMAL run of
+    consecutive BIP-39 wordlist words whose length is EXACTLY one of
+    SEED_PHRASE_LENGTHS. A run of some other length (11, 13, 30, ...) is
+    not itself a seed-phrase shape and is skipped -- deliberately an exact
+    match rather than a sliding window over every sub-run, which would
+    multiply findings for one real phrase sitting next to ordinary
+    wordlist-shaped words."""
+    runs = []
+    i, n = 0, len(tokens)
+    while i < n:
+        if tokens[i] in BIP39_WORDLIST_SET:
+            j = i
+            while j < n and tokens[j] in BIP39_WORDLIST_SET:
+                j += 1
+            length = j - i
+            if length in SEED_PHRASE_LENGTHS:
+                runs.append((i, length))
+            i = j
+        else:
+            i += 1
+    return runs
+
+
+def _check_seed_phrase_detected(manifest, root) -> list:
+    findings = []
+    for filepath in iter_files(root):
+        basename = os.path.basename(filepath)
+        if basename == SEED_PHRASE_WORDLIST_FILENAME:
+            continue
+        ext = os.path.splitext(filepath)[1]
+        if ext in BINARY_EXTENSIONS:
+            continue
+        try:
+            if os.path.getsize(filepath) > MAX_SCAN_BYTES:
+                continue
+            with open(filepath, "r", encoding="utf-8", errors="strict") as fh:
+                lines = fh.readlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        tokens = []  # (word, line_no) -- newline is just another separator here
+        for i, line in enumerate(lines, start=1):
+            for word in line.split():
+                tokens.append((word, i))
+        words_only = [w for w, _ in tokens]
+
+        for start_idx, length in _seed_phrase_runs(words_only):
+            start_line = tokens[start_idx][1]
+            rel = os.path.relpath(filepath, root)
+            findings.append(Finding(
+                check_id="secrets.seed_phrase_detected",
+                category=CATEGORY,
+                severity=Severity.CRITICAL,
+                title=f"Possible {length}-word BIP-39 seed phrase found in plaintext",
+                evidence=Evidence(file=rel, line=start_line, detail={"word_count": length}),
+                fix="Treat this as a compromised wallet: move funds to a freshly generated seed phrase, then delete this file (and purge it from git history if it was ever committed). Store seed phrases offline (hardware wallet, paper backup) -- never in a plaintext file.",
+                fix_time_estimate="30 min",
+                location=f"{rel}:{start_line}",
+            ))
+    return findings
+
+
+def _check_seed_phrase_in_git_history(manifest, root) -> list:
+    if not os.path.isdir(os.path.join(root, ".git")):
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-p", "--all", "--", *SEED_PHRASE_GIT_GLOBS],
+            cwd=root, capture_output=True, text=True, timeout=30, errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+
+    findings = []
+    seen_hashes = set()
+    for line in proc.stdout.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        words = line[1:].split()
+        for start_idx, length in _seed_phrase_runs(words):
+            phrase = " ".join(words[start_idx:start_idx + length])
+            h = redact.hash8(phrase)
+            if h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+            findings.append(Finding(
+                check_id="secrets.seed_phrase_detected",
+                category=CATEGORY,
+                severity=Severity.CRITICAL,
+                title=f"Possible {length}-word BIP-39 seed phrase found in git history",
+                evidence=Evidence(value_hash8=h, detail={"word_count": length}),
+                fix="Treat as a compromised wallet: move funds to a freshly generated seed phrase. Do not attempt to rewrite git history with this tool.",
+                fix_time_estimate="30 min",
+                location=f"{root} (git history)",
+            ))
+    return findings
+
 
 def _check_secret_in_git_history(manifest, root) -> list:
     if not os.path.isdir(os.path.join(root, ".git")):
@@ -347,4 +473,6 @@ def run(manifest, root, context=None) -> list:
     findings += _check_generic_env_var_name_collision(manifest, root)
     findings += _check_duplicate_secret_value_different_names(manifest, root)
     findings += _check_secret_in_git_history(manifest, root)
+    findings += _check_seed_phrase_detected(manifest, root)
+    findings += _check_seed_phrase_in_git_history(manifest, root)
     return findings

@@ -217,6 +217,121 @@ class TestCleanNoFalsePositives(unittest.TestCase):
             self.assertEqual(findings, [])
 
 
+class TestUnauthenticatedDangerousRouteActivation(unittest.TestCase):
+    def test_bare_requirements_txt_does_not_activate(self):
+        # dependency NAMED in a manifest, no actual route file -- must not
+        # activate (regression guard for the existing unrelated-project test)
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "requirements.txt"), "flask\n")
+            m = manifest_mod.build(root)
+            self.assertFalse(network_checker.activates(m))
+
+    def test_flask_route_file_activates(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "requirements.txt"), "flask\n")
+            write(os.path.join(root, "app.py"), "from flask import Flask\napp = Flask(__name__)\n")
+            m = manifest_mod.build(root)
+            self.assertTrue(network_checker.activates(m))
+
+
+class TestUnauthenticatedDangerousRoute(unittest.TestCase):
+    def test_flags_flask_unauthenticated_shell_exec(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, "app.py"),
+                "import subprocess\nfrom flask import Flask, request\napp = Flask(__name__)\n\n"
+                '@app.route("/run", methods=["POST"])\n'
+                "def run_command():\n"
+                '    cmd = request.args.get("cmd")\n'
+                "    return subprocess.run(cmd, shell=True, capture_output=True).stdout\n",
+            )
+            findings = run_network(root)
+            hits = [f for f in findings if f.check_id == "network.unauthenticated_dangerous_route"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].severity.value, "high")
+            self.assertEqual(hits[0].confidence, "low")
+            self.assertEqual(hits[0].evidence.detail["sink_kind"], "command_execution")
+
+    def test_does_not_flag_route_with_login_required(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, "app.py"),
+                "import subprocess\nfrom flask import Flask, request\nfrom auth import login_required\n"
+                "app = Flask(__name__)\n\n"
+                '@app.route("/run", methods=["POST"])\n'
+                "@login_required\n"
+                "def run_command():\n"
+                '    cmd = request.args.get("cmd")\n'
+                "    return subprocess.run(cmd, shell=True, capture_output=True).stdout\n",
+            )
+            findings = run_network(root)
+            hits = [f for f in findings if f.check_id == "network.unauthenticated_dangerous_route"]
+            self.assertEqual(hits, [])
+
+    def test_does_not_flag_route_without_dangerous_sink(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, "app.py"),
+                "from flask import Flask, request\napp = Flask(__name__)\n\n"
+                '@app.route("/echo")\n'
+                "def echo():\n"
+                '    return request.args.get("msg")\n',
+            )
+            findings = run_network(root)
+            hits = [f for f in findings if f.check_id == "network.unauthenticated_dangerous_route"]
+            self.assertEqual(hits, [])
+
+    def test_flags_express_unauthenticated_exec(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, "server.js"),
+                'const express = require("express");\n'
+                'const { exec } = require("child_process");\n'
+                "const app = express();\n\n"
+                'app.post("/run", (req, res) => {\n'
+                "  const cmd = req.body.cmd;\n"
+                "  exec(cmd, (err, stdout) => {\n"
+                "    res.send(stdout);\n"
+                "  });\n"
+                "});\n",
+            )
+            findings = run_network(root)
+            hits = [f for f in findings if f.check_id == "network.unauthenticated_dangerous_route"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].evidence.detail["sink_kind"], "command_execution")
+
+    def test_does_not_flag_express_route_behind_app_wide_middleware(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(
+                os.path.join(root, "server.js"),
+                'const express = require("express");\n'
+                'const { exec } = require("child_process");\n'
+                'const { requireAuth } = require("./auth");\n'
+                "const app = express();\n"
+                "app.use(requireAuth);\n\n"
+                'app.post("/run", (req, res) => {\n'
+                "  const cmd = req.body.cmd;\n"
+                "  exec(cmd, (err, stdout) => {\n"
+                "    res.send(stdout);\n"
+                "  });\n"
+                "});\n",
+            )
+            findings = run_network(root)
+            hits = [f for f in findings if f.check_id == "network.unauthenticated_dangerous_route"]
+            self.assertEqual(hits, [])
+
+    def test_fixture_project_on_disk(self):
+        fixture_root = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "fixtures", "dangerous_routes_project"
+        )
+        findings = run_network(fixture_root)
+        hits = [f for f in findings if f.check_id == "network.unauthenticated_dangerous_route"]
+        locations = sorted(f.location for f in hits)
+        # exactly the two unauthenticated routes -- unsafe_app.py's clean
+        # /status route and safe_app.py / protected_server.js must stay silent
+        self.assertEqual(locations, ["server.js:6", "unsafe_app.py:8"])
+
+
 class TestServiceWithoutAccessLog(unittest.TestCase):
     def _ingress(self, root, target="http://localhost:9119"):
         write(

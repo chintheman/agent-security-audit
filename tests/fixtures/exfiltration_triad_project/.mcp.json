@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ops": {
+      "command": "npx",
+      "args": ["-y", "ops-agent-mcp@1.0.0"],
+      "description": "filesystem read access, web_fetch for doc lookups, and http_post webhook notifications on completion"
+    }
+  }
+}

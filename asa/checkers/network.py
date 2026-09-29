@@ -1,4 +1,4 @@
-"""Network/service exposure checks. Six checks:
+"""Network/service exposure checks. Seven checks:
   1. service_bound_all_interfaces -- 0.0.0.0 bind instead of loopback
   2. tunnel_without_access_policy -- Cloudflare Tunnel ingress to a loopback
      service with no access policy alongside it
@@ -10,6 +10,10 @@
   6. internet_facing_service_without_access_log -- Cloudflare Tunnel
      loopback target with no fresh per-request origin access log
      (presence/liveness heuristic — never parses log content)
+  7. unauthenticated_dangerous_route -- a Flask/FastAPI/Express/Hono route
+     handler that executes a command, reads an arbitrary file, or proxies
+     a request, built from request input, with no auth check visible on
+     that route or the app (heuristic, static text scan, no AST/parser)
 
 Best-effort checks are marked confidence="medium" or lower and never crash
 if the underlying command/file isn't available -- they degrade to "unknown,
@@ -34,6 +38,7 @@ CHECK_IDS = [
     "network.firewall_disabled",
     "network.screen_lock_disabled",
     "network.internet_facing_service_without_access_log",
+    "network.unauthenticated_dangerous_route",
 ]
 
 BIND_ALL_PATTERNS = [
@@ -50,6 +55,7 @@ def activates(manifest) -> bool:
         manifest.has_kind("docker_compose")
         or manifest.has_kind("cloudflared_config")
         or _home_is_scan_root(manifest)
+        or _has_web_route_framework(manifest)
     )
 
 
@@ -59,6 +65,46 @@ def _home_is_scan_root(manifest) -> bool:
         return os.path.realpath(manifest.scan_root) == os.path.realpath(home)
     except OSError:
         return False
+
+
+ROUTE_SOURCE_EXTENSIONS = {".py", ".js", ".ts", ".mjs", ".cjs"}
+MAX_ROUTE_SCAN_BYTES = 500_000
+
+FRAMEWORK_IMPORT_MARKERS = re.compile(
+    r"(?i)(from\s+flask\s+import|import\s+flask\b|"
+    r"from\s+fastapi\s+import|import\s+fastapi\b|"
+    r"require\(\s*[\"']express[\"']\s*\)|from\s+[\"']express[\"']|import\s+express\b|"
+    r"require\(\s*[\"']hono[\"']\s*\)|from\s+[\"']hono[\"']|new\s+Hono\s*\()"
+)
+
+
+def _has_web_route_framework(manifest) -> bool:
+    """Cheap-ish activation probe for network.unauthenticated_dangerous_route:
+    only bothers reading file content when a node/python project is
+    already present, and only until it finds one real framework import --
+    NOT triggered by a dependency merely being *named* in requirements.txt
+    or package.json (a project can list flask as a dependency without
+    having written a single route yet)."""
+    if not (manifest.has_kind("python_project") or manifest.has_kind("node_project")):
+        return False
+    scanned = 0
+    for filepath in iter_files(manifest.scan_root):
+        ext = os.path.splitext(filepath)[1]
+        if ext not in ROUTE_SOURCE_EXTENSIONS:
+            continue
+        scanned += 1
+        if scanned > 500:  # bound the probe on a very large tree
+            break
+        try:
+            if os.path.getsize(filepath) > MAX_ROUTE_SCAN_BYTES:
+                continue
+            with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except OSError:
+            continue
+        if FRAMEWORK_IMPORT_MARKERS.search(content):
+            return True
+    return False
 
 
 def _check_bound_all_interfaces(manifest, root) -> list:
@@ -365,6 +411,190 @@ def _check_service_without_access_log(manifest, root) -> list:
     return findings
 
 
+PY_ROUTE_DECORATOR = re.compile(r"^\s*@\S*\.(?:route|get|post|put|delete|patch)\s*\(", re.IGNORECASE)
+PY_DEF_LINE = re.compile(r"^\s*(?:async\s+)?def\s+\w+\s*\(")
+JS_ROUTE_CALL = re.compile(
+    r"\b(?:app|router|\w*[Rr]outer)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*[\"'`]"
+)
+
+REQUEST_INPUT_PATTERN = re.compile(
+    r"\b(request\.(?:args|form|json|values|data|get_json)|flask\.request|"
+    r"req\.(?:query|body|params)|c\.req\.(?:query|param|json))\b"
+)
+
+# (sink_kind, pattern) -- checked in order, first match wins.
+DANGEROUS_SINK_PATTERNS = [
+    ("command_execution", re.compile(
+        r"(subprocess\.\w+\s*\(|os\.system\s*\(|os\.popen\s*\(|shell\s*=\s*True|"
+        r"\beval\s*\(|\bexec\s*\(|child_process|execSync\s*\(|\bspawn\s*\(|Bun\.spawn\s*\()"
+    )),
+    ("arbitrary_file_read", re.compile(
+        r"(\bopen\s*\(|fs\.readFile(?:Sync)?\s*\()"
+    )),
+    ("request_proxy", re.compile(
+        r"(requests\.(?:get|post)\s*\(|urllib\.request\.urlopen\s*\(|\bfetch\s*\(|axios\.(?:get|post)\s*\()"
+    )),
+]
+
+# Both snake_case ("require_auth") and camelCase/no-separator ("requireAuth")
+# spellings, since real code mixes both conventions -- a plain `\bauth\b`
+# would miss "requireAuth" entirely (no word boundary before "Auth" inside
+# one identifier) but would also over-match unrelated words containing
+# "auth" as a substring ("author"), so each variant is spelled out instead.
+_AUTH_TOKEN_ALTERNATION = (
+    r"login_?required|requires?_?auth\w*|jwt_?required|authenticate\w*|"
+    r"verify_?token\w*|jwt\.verify|passport\.authenticate|check_?auth\w*|"
+    r"current_user|req\.user|session\[|is_?authenticated|authmiddleware|"
+    r"authguard|api[_-]?key[_-]?required|authorization"
+)
+AUTH_NEARBY_MARKERS = re.compile(rf"(?i)\b(?:{_AUTH_TOKEN_ALTERNATION})\b")
+# A file-wide gate registered before the route (Express `app.use(authMiddleware)`,
+# Flask `@app.before_request`) -- covers auth applied once for the whole app
+# rather than per-route.
+APP_WIDE_AUTH_MARKER = re.compile(
+    rf"(?i)(app\.use\([^)]*\b(?:{_AUTH_TOKEN_ALTERNATION})\b|before_request)"
+)
+
+SINK_TITLES = {
+    "command_execution": (
+        Severity.HIGH,
+        "Unauthenticated route in {name} appears to execute a command built from request input -- this is remote code execution",
+        "Verify manually: confirm there's no auth check applied via another layer not visible in this file (API gateway, edge proxy, a framework middleware defined elsewhere). If there truly is none, add an auth check before this handler runs -- an unauthenticated route that executes a command from request input is remote code execution.",
+    ),
+    "arbitrary_file_read": (
+        Severity.MEDIUM,
+        "Unauthenticated route in {name} appears to read a file path built from request input",
+        "Verify manually: confirm there's no auth check applied via another layer. If there truly is none, add an auth check and validate/allowlist the path before this handler runs -- an unauthenticated arbitrary-file-read route can leak any file the process can access.",
+    ),
+    "request_proxy": (
+        Severity.MEDIUM,
+        "Unauthenticated route in {name} appears to proxy a URL built from request input",
+        "Verify manually: confirm there's no auth check applied via another layer. If there truly is none, add an auth check and an allowlist of permitted destinations before this handler runs -- an unauthenticated open proxy can reach internal services or be used to exfiltrate data.",
+    ),
+}
+
+
+def _extract_python_route_block(lines: list, decorator_idx: int):
+    def_idx = decorator_idx
+    limit = min(len(lines), decorator_idx + 6)
+    while def_idx < limit and not PY_DEF_LINE.match(lines[def_idx]):
+        def_idx += 1
+    if def_idx >= limit:
+        return None
+    base_indent = len(lines[def_idx]) - len(lines[def_idx].lstrip())
+    end_idx = def_idx + 1
+    while end_idx < len(lines):
+        line = lines[end_idx]
+        if line.strip():
+            indent = len(line) - len(line.lstrip())
+            if indent <= base_indent:
+                break
+        end_idx += 1
+    return def_idx, end_idx
+
+
+def _extract_js_route_block(lines: list, start_idx: int, max_lines: int = 100):
+    depth = 0
+    started = False
+    end_idx = start_idx
+    limit = min(len(lines), start_idx + max_lines)
+    for i in range(start_idx, limit):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if "{" in lines[i]:
+            started = True
+        end_idx = i
+        if started and depth <= 0:
+            break
+    return start_idx, end_idx
+
+
+def _check_unauthenticated_dangerous_route(manifest, root) -> list:
+    """Heuristic static scan, not an AST/parser -- a route decorator/call is
+    found by regex, its body extracted by indentation (Python) or brace
+    balance (JS/TS), then that text window is checked for a
+    request-input-derived dangerous sink with no auth marker nearby or
+    applied app-wide earlier in the file. False negatives are expected
+    (auth enforced by something outside the file: a gateway, a decorator
+    this regex doesn't recognize) -- every finding says so and asks for
+    manual verification rather than claiming certainty."""
+    findings = []
+    seen_locations = set()
+    for filepath in iter_files(root):
+        ext = os.path.splitext(filepath)[1]
+        if ext not in ROUTE_SOURCE_EXTENSIONS:
+            continue
+        try:
+            if os.path.getsize(filepath) > MAX_ROUTE_SCAN_BYTES:
+                continue
+            with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+
+        content = "".join(lines)
+        app_wide_match = APP_WIDE_AUTH_MARKER.search(content)
+        app_wide_auth_line = content[:app_wide_match.start()].count("\n") if app_wide_match else None
+
+        is_python = ext == ".py"
+        route_indices = [
+            i for i, line in enumerate(lines)
+            if (PY_ROUTE_DECORATOR.match(line) if is_python else JS_ROUTE_CALL.search(line))
+        ]
+
+        prev_block_end = -1  # bounds the auth lookback so it can't bleed into a PRECEDING route's own body
+        for route_idx in route_indices:
+            block = _extract_python_route_block(lines, route_idx) if is_python else _extract_js_route_block(lines, route_idx)
+            if block is None:
+                continue
+            _block_start, block_end = block
+
+            # Sink/request-input detection is scoped to this route's OWN
+            # decorator+body only -- never the lookback window. Two routes
+            # sitting a few lines apart must not let one borrow the other's
+            # request-input reference or dangerous call.
+            own_block_text = "".join(lines[route_idx:block_end + 1])
+            if not REQUEST_INPUT_PATTERN.search(own_block_text):
+                prev_block_end = block_end
+                continue
+
+            sink_kind = None
+            for kind, pattern in DANGEROUS_SINK_PATTERNS:
+                if pattern.search(own_block_text):
+                    sink_kind = kind
+                    break
+            if sink_kind is None:
+                prev_block_end = block_end
+                continue
+
+            # The auth lookback (stacked decorators, an `if not authed: abort()`
+            # guard just above) is allowed to look up to 8 lines back, but never
+            # past the end of the previous route's own block.
+            auth_window_start = max(prev_block_end + 1, route_idx - 8)
+            auth_window_text = "".join(lines[auth_window_start:block_end + 1])
+            has_nearby_auth = bool(AUTH_NEARBY_MARKERS.search(auth_window_text))
+            has_app_wide_auth = app_wide_auth_line is not None and app_wide_auth_line < route_idx
+            prev_block_end = block_end
+            if has_nearby_auth or has_app_wide_auth:
+                continue
+
+            rel = os.path.relpath(filepath, root)
+            loc = f"{rel}:{route_idx + 1}"
+            if loc in seen_locations:
+                continue
+            seen_locations.add(loc)
+
+            severity, title_tmpl, fix = SINK_TITLES[sink_kind]
+            findings.append(Finding(
+                check_id="network.unauthenticated_dangerous_route",
+                category=CATEGORY, severity=severity,
+                title=title_tmpl.format(name=os.path.basename(filepath)),
+                evidence=Evidence(file=rel, line=route_idx + 1, detail={"sink_kind": sink_kind}),
+                fix=fix, fix_time_estimate="30 min", location=loc,
+                confidence="low",
+            ))
+    return findings
+
+
 def run(manifest, root, context=None) -> list:
     findings = []
     findings += _check_bound_all_interfaces(manifest, root)
@@ -373,4 +603,5 @@ def run(manifest, root, context=None) -> list:
     findings += _check_firewall_disabled(manifest, root)
     findings += _check_screen_lock_disabled(manifest, root)
     findings += _check_service_without_access_log(manifest, root)
+    findings += _check_unauthenticated_dangerous_route(manifest, root)
     return findings

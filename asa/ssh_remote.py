@@ -30,6 +30,7 @@ import asa.checkers.network
 import asa.checkers.permissions
 import asa.checkers.secrets
 import asa.checkers.supply_chain
+import asa.data.bip39_wordlist
 import asa.data.secret_patterns
 import asa.data.signatures
 import asa.finding
@@ -51,6 +52,7 @@ _PRE_REGISTRY_MODULES = [
     asa.finding,
     asa.data.secret_patterns,
     asa.data.signatures,
+    asa.data.bip39_wordlist,
     asa.redact,
     asa.manifest,
     asa.checkers.base,
