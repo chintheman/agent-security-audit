@@ -9,14 +9,16 @@ All notable changes to this project are documented here.
 Four new checks (34 -> 38 total, still six categories, still zero
 dependencies):
 
-- **`secrets.seed_phrase_detected`** -- flags a run of 12, 15, 18, 21, or
-  24 consecutive BIP-39 English wordlist words in a text file, or in
-  `git log -p` history. The 2048-word list ships in-package
+- **`secrets.seed_phrase_detected`** -- flags any run of 12 or more
+  consecutive BIP-39 English wordlist words in a text file, or in
+  `git log -p` history (not just the exact 12/15/18/21/24 canonical
+  lengths -- a real 12-word phrase sitting next to one more ordinary
+  wordlist word is still a real phrase, so the whole run is reported as
+  one finding). The 2048-word list ships in-package
   (`asa/data/bip39_wordlist.py`, public domain, sourced verbatim from the
-  BIP-39 spec). Only an exact-case-sensitive-lowercase, exact-length,
-  whitespace-separated run counts, to keep false positives low. The
-  finding never carries the phrase itself -- only file, line, and word
-  count.
+  BIP-39 spec). Only a case-sensitive-lowercase, whitespace-separated run
+  counts, to keep false positives low. The finding never carries the
+  phrase itself -- only file, line, and word count.
 - **`agent.exfiltration_triad`** -- flags an agent config that combines
   all three of: access to private data (filesystem, secrets, email, db
   tools), ingestion of untrusted content (web fetch/browse, email,

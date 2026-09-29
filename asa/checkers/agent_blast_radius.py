@@ -44,6 +44,12 @@ CHECK_IDS = [
 
 BROAD_BASH_PATTERNS = {"Bash", "Bash(*)", "Bash(**)"}
 
+# Same size guard secrets.py/network.py apply before reading a file whole
+# -- an agent config is normally tiny, but a hermes_profile directory can
+# contain arbitrary text-ish files, so this skips anything unreasonably
+# large rather than reading it in one go.
+MAX_AGENT_CONFIG_SCAN_BYTES = 1_000_000
+
 UNTRUSTED_INPUT_KEYWORDS = re.compile(
     r"(?i)\b(web[_-]?fetch|read[_-]?webpage|browse|web[_-]?search|gmail|email|"
     r"telegram|read[_-]?url|http[_-]?request|fetch[_-]?url|rss|news[_-]?feed)\b"
@@ -253,13 +259,24 @@ def _agent_config_candidates(manifest, root) -> list:
     return sorted(set(candidates))
 
 
+def _read_capped(path: str):
+    """Size-capped text read, same guard secrets.py/network.py use before
+    reading a file whole -- returns None (skip) for anything unreadable
+    or over MAX_AGENT_CONFIG_SCAN_BYTES."""
+    try:
+        if os.path.getsize(path) > MAX_AGENT_CONFIG_SCAN_BYTES:
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
 def _check_exfiltration_triad(manifest, root) -> list:
     findings = []
     for path in _agent_config_candidates(manifest, root):
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                content = fh.read()
-        except OSError:
+        content = _read_capped(path)
+        if content is None:
             continue
         has_private = bool(PRIVATE_DATA_KEYWORDS.search(content))
         has_untrusted = bool(UNTRUSTED_CONTENT_KEYWORDS.search(content))
@@ -330,10 +347,8 @@ def _check_trusts_mcp_tool_annotations(manifest, root) -> list:
     # Claude Code that support this pattern natively.
     seen_files = set()
     for path in _agent_config_candidates(manifest, root):
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                content = fh.read()
-        except OSError:
+        content = _read_capped(path)
+        if content is None:
             continue
         m = ANNOTATION_TRUST_PATTERN.search(content)
         if not m:

@@ -261,9 +261,11 @@ class TestCleanProjectNoFalsePositives(unittest.TestCase):
 FIRST_12_WORDS = "abandon ability able about above absent absorb abstract absurd abuse access accident"
 FIRST_15_WORDS = FIRST_12_WORDS + " account accuse achieve"
 FIRST_24_WORDS = FIRST_15_WORDS + " acid acoustic acquire across act action actor actress actual"
+FIRST_25_WORDS = FIRST_24_WORDS + " adapt"
 FIRST_11_WORDS = "abandon ability able about above absent absorb abstract absurd abuse access"
-# 13 consecutive real wordlist words -- deliberately NOT a valid seed-phrase
-# length (12/15/18/21/24), so this must never trigger a finding.
+# 13 consecutive real wordlist words, none of which line up on a
+# 12/15/18/21/24 boundary -- must still be flagged as ONE finding (it
+# contains a real 12-word phrase plus one more ordinary wordlist word).
 THIRTEEN_WORD_RUN = "arrive arrow art artefact artist artwork ask aspect assault asset assist assume asthma"
 
 
@@ -276,6 +278,7 @@ class TestSeedPhraseDetected(unittest.TestCase):
             self.assertEqual(len(hits), 1)
             self.assertEqual(hits[0].severity.value, "critical")
             self.assertEqual(hits[0].evidence.detail["word_count"], 12)
+            self.assertTrue(hits[0].evidence.detail["exact_valid_length"])
             self.assertEqual(hits[0].evidence.line, 1)
 
     def test_flags_24_word_run(self):
@@ -293,13 +296,38 @@ class TestSeedPhraseDetected(unittest.TestCase):
             hits = [f for f in findings if f.check_id == "secrets.seed_phrase_detected"]
             self.assertEqual(hits, [])
 
-    def test_does_not_flag_run_of_invalid_length(self):
-        # 13 consecutive real wordlist words -- not one of 12/15/18/21/24
+    def test_flags_13_word_run_not_on_a_canonical_boundary(self):
+        # 13 consecutive real wordlist words -- not an exact 12/15/18/21/24
+        # length, but it CONTAINS a real 12-word phrase and must still be
+        # flagged as one finding, not silently skipped.
         with tempfile.TemporaryDirectory() as root:
             write(os.path.join(root, "notes.txt"), THIRTEEN_WORD_RUN + "\n")
             findings = run_secrets(root)
             hits = [f for f in findings if f.check_id == "secrets.seed_phrase_detected"]
-            self.assertEqual(hits, [])
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].evidence.detail["word_count"], 13)
+            self.assertFalse(hits[0].evidence.detail["exact_valid_length"])
+
+    def test_flags_12_word_phrase_plus_one_trailing_word_as_one_finding(self):
+        # The exact regression this test guards: a real 12-word phrase
+        # sitting next to one ordinary wordlist word ("accident" -> "keep")
+        # makes a 13-word run. An exact-length-only matcher would report
+        # zero findings here, which is the bug this test locks in as fixed.
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "notes.txt"), FIRST_12_WORDS + " keep\n")
+            findings = run_secrets(root)
+            hits = [f for f in findings if f.check_id == "secrets.seed_phrase_detected"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].evidence.detail["word_count"], 13)
+
+    def test_flags_25_word_run_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "notes.txt"), FIRST_25_WORDS + "\n")
+            findings = run_secrets(root)
+            hits = [f for f in findings if f.check_id == "secrets.seed_phrase_detected"]
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].evidence.detail["word_count"], 25)
+            self.assertFalse(hits[0].evidence.detail["exact_valid_length"])
 
     def test_mixed_case_breaks_the_run(self):
         with tempfile.TemporaryDirectory() as root:

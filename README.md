@@ -93,7 +93,7 @@ Six categories, 38 checks, drawn directly from real findings:
 
 | Category | Examples |
 |---|---|
-| **Secrets** | hardcoded credentials instead of env-var refs, world-readable `.env` files, the same secret value stored under two different names, secrets in git history, a 12/15/18/21/24-word BIP-39 seed phrase in a text file or git history |
+| **Secrets** | hardcoded credentials instead of env-var refs, world-readable `.env` files, the same secret value stored under two different names, secrets in git history, a run of 12+ consecutive BIP-39 wordlist words in a text file or git history |
 | **Permissions** | SSH keys with no passphrase, insecure file/umask defaults |
 | **Network** | services bound to `0.0.0.0`, a tunnel with no access policy in front of it, a service reachable over both HTTPS and plaintext HTTP, an unauthenticated Flask/FastAPI/Express/Hono route that executes a command, reads an arbitrary file, or proxies a request built from request input |
 | **Agent blast radius** | `Bash(*)`-shaped tool grants, unpinned `npx -y pkg@latest` MCP servers, an unattended/cron profile with no narrower scope than an interactive one, an unpinned install grant sitting next to a web-content channel with the approval gate off (the llms.txt supply-chain vector), the exfiltration triad (private-data access + untrusted-content ingestion + an outbound channel in one config), a blanket `mcp__server__*` allow-wildcard or auto-approval conditioned on a server-declared (and unverified) tool annotation |

@@ -11,8 +11,11 @@ Eight checks:
      across unrelated components
   6. duplicate_secret_value_different_names -- same value, two different names
   7. secret_in_git_history               -- credential shape in `git log -p`
-  8. seed_phrase_detected                -- a run of 12/15/18/21/24
-     consecutive BIP-39 wordlist words in a text file, or in `git log -p`
+  8. seed_phrase_detected                -- a run of 12 or more consecutive
+     BIP-39 wordlist words in a text file, or in `git log -p` (any length
+     >= 12 is flagged, not just the exact 12/15/18/21/24 canonical
+     lengths -- a real phrase sitting next to one more ordinary wordlist
+     word is still a real phrase)
 """
 
 from __future__ import annotations
@@ -310,10 +313,15 @@ CREDENTIAL_FILE_GLOBS = ["*.env*", "*.pem", "*.key", "*secret*", "*credential*",
 # path", so a `git log -p --all` on a large history stays tractable.
 SEED_PHRASE_GIT_GLOBS = CREDENTIAL_FILE_GLOBS + ["*.txt", "*.md", "*seed*", "*wallet*", "*mnemonic*"]
 
-# Exact word counts a BIP-39 seed phrase can be -- 12/15/18/21/24 words,
-# never anything in between (each length corresponds to a specific
-# entropy+checksum size in the spec).
-SEED_PHRASE_LENGTHS = {12, 15, 18, 21, 24}
+# A real BIP-39 seed phrase is always exactly one of these lengths (each
+# corresponds to a specific entropy+checksum size in the spec) -- used
+# only to describe a run in the finding text, NOT as a filter. A 12-word
+# phrase sitting next to one ordinary wordlist word ("... accident keep")
+# is a 13-word run, and a 13-word run still contains a real 12-word
+# phrase -- requiring an EXACT match at one of these lengths would miss
+# it, so any run of MIN_SEED_PHRASE_LENGTH or more is flagged.
+VALID_SEED_PHRASE_LENGTHS = {12, 15, 18, 21, 24}
+MIN_SEED_PHRASE_LENGTH = min(VALID_SEED_PHRASE_LENGTHS)
 
 # The module we ship the wordlist in -- never flagged by the check that
 # uses it, or every scan of this project's own source would trip on its
@@ -328,12 +336,11 @@ def _seed_phrase_runs(tokens: list) -> list:
     on false positives without any extra regex).
 
     Returns [(start_index, word_count), ...] for every MAXIMAL run of
-    consecutive BIP-39 wordlist words whose length is EXACTLY one of
-    SEED_PHRASE_LENGTHS. A run of some other length (11, 13, 30, ...) is
-    not itself a seed-phrase shape and is skipped -- deliberately an exact
-    match rather than a sliding window over every sub-run, which would
-    multiply findings for one real phrase sitting next to ordinary
-    wordlist-shaped words."""
+    MIN_SEED_PHRASE_LENGTH (12) or more consecutive BIP-39 wordlist words.
+    One finding per maximal run, however long -- a 13/25/whatever-word run
+    still contains a real seed phrase, so length is reported, not used to
+    filter. A run shorter than 12 is not seed-phrase-shaped and is
+    skipped."""
     runs = []
     i, n = 0, len(tokens)
     while i < n:
@@ -342,12 +349,18 @@ def _seed_phrase_runs(tokens: list) -> list:
             while j < n and tokens[j] in BIP39_WORDLIST_SET:
                 j += 1
             length = j - i
-            if length in SEED_PHRASE_LENGTHS:
+            if length >= MIN_SEED_PHRASE_LENGTH:
                 runs.append((i, length))
             i = j
         else:
             i += 1
     return runs
+
+
+def _seed_phrase_title(length: int) -> str:
+    if length in VALID_SEED_PHRASE_LENGTHS:
+        return f"Possible {length}-word BIP-39 seed phrase"
+    return f"Possible BIP-39 seed phrase ({length} consecutive wordlist words -- contains a valid 12/15/18/21/24-word phrase)"
 
 
 def _check_seed_phrase_detected(manifest, root) -> list:
@@ -380,8 +393,11 @@ def _check_seed_phrase_detected(manifest, root) -> list:
                 check_id="secrets.seed_phrase_detected",
                 category=CATEGORY,
                 severity=Severity.CRITICAL,
-                title=f"Possible {length}-word BIP-39 seed phrase found in plaintext",
-                evidence=Evidence(file=rel, line=start_line, detail={"word_count": length}),
+                title=f"{_seed_phrase_title(length)} found in plaintext",
+                evidence=Evidence(file=rel, line=start_line, detail={
+                    "word_count": length,
+                    "exact_valid_length": length in VALID_SEED_PHRASE_LENGTHS,
+                }),
                 fix="Treat this as a compromised wallet: move funds to a freshly generated seed phrase, then delete this file (and purge it from git history if it was ever committed). Store seed phrases offline (hardware wallet, paper backup) -- never in a plaintext file.",
                 fix_time_estimate="30 min",
                 location=f"{rel}:{start_line}",
@@ -418,8 +434,11 @@ def _check_seed_phrase_in_git_history(manifest, root) -> list:
                 check_id="secrets.seed_phrase_detected",
                 category=CATEGORY,
                 severity=Severity.CRITICAL,
-                title=f"Possible {length}-word BIP-39 seed phrase found in git history",
-                evidence=Evidence(value_hash8=h, detail={"word_count": length}),
+                title=f"{_seed_phrase_title(length)} found in git history",
+                evidence=Evidence(value_hash8=h, detail={
+                    "word_count": length,
+                    "exact_valid_length": length in VALID_SEED_PHRASE_LENGTHS,
+                }),
                 fix="Treat as a compromised wallet: move funds to a freshly generated seed phrase. Do not attempt to rewrite git history with this tool.",
                 fix_time_estimate="30 min",
                 location=f"{root} (git history)",
